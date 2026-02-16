@@ -1,13 +1,12 @@
-
-import json
 from dataclasses import dataclass
-from pathlib import Path
+from app.utils import load_json
 
 
 @dataclass(frozen=True)
 class ServerConfig:
     id: str
     url: str
+    allowed_tools: list[str] | None = None
 
 
 class ServerRegistry:
@@ -17,7 +16,7 @@ class ServerRegistry:
 
     @classmethod
     def load_from_file(cls, path: str) -> "ServerRegistry":
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = load_json(path)
 
         servers_list = data.get("servers", [])
         if not servers_list:
@@ -31,7 +30,13 @@ class ServerRegistry:
                 raise ValueError("Each server must have 'id' and 'url'")
             if sid in servers:
                 raise ValueError(f"Duplicate server id: {sid}")
-            servers[sid] = ServerConfig(id=sid, url=url)
+
+            allowed_tools = s.get("allowed_tools")
+            if allowed_tools is not None:
+                if not isinstance(allowed_tools, list) or not all(isinstance(t, str) and t for t in allowed_tools):
+                    raise ValueError(f"Server '{sid}' has invalid allowed_tools; expected non-empty strings")
+
+            servers[sid] = ServerConfig(id=sid, url=url, allowed_tools=allowed_tools)
 
         default_id = data.get("default_server_id") or servers_list[0]["id"]
         if default_id not in servers:
@@ -44,3 +49,6 @@ class ServerRegistry:
         if sid not in self._servers:
             raise KeyError(f"Unknown server_id: {sid}")
         return self._servers[sid]
+
+    def all(self) -> list[ServerConfig]:
+        return list(self._servers.values())

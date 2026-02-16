@@ -7,15 +7,16 @@ class Settings(BaseSettings):
     # OpenAI
     openai_api_key: str
     # openai_model: str = "gpt-5.2"
-    # openai_model: str = "gpt-5-mini-2025-08-07"
-    openai_model: str = "gpt-5-nano-2025-08-07"
+    openai_model: str = "gpt-5-mini-2025-08-07"
+    # openai_model: str = "gpt-5-nano-2025-08-07"
 
     # Servers config
     servers_config_path: str = "servers.json"
 
     # Runtime
     mcp_timeout_s: float = 20.0
-    max_retries: int = 2
+    max_retries: int = 0
+    max_plan_steps: int = 5
 
 
 settings = Settings()
