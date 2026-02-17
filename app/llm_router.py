@@ -1,8 +1,16 @@
 import json
+import logging
+from pathlib import Path
+
 from openai import AsyncOpenAI
+
 from app.schemas import NextStepPlan
 
+log = logging.getLogger("llm_router")
+log.setLevel(logging.INFO)
+
 client = AsyncOpenAI()
+SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "next_step_system_prompt.txt"
 
 NEXT_STEP_PLAN_SCHEMA = {
     "type": "object",
@@ -33,6 +41,10 @@ def _summarize_executed_steps(executed_steps: list[dict]) -> str:
     return json.dumps(executed_steps, ensure_ascii=False)
 
 
+def _load_system_prompt() -> str:
+    return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+
+
 async def plan_next_step(
     *,
     model: str,
@@ -45,19 +57,7 @@ async def plan_next_step(
     """
     Ask the LLM for the next step in a multi-step plan.
     """
-    system = (
-        "You are a router that can execute tasks through MCP tools one step at a time.\n"
-        "Tool names may be fully-qualified IDs in the form 'server_id.tool_name'.\n"
-        "If allowed_tools is provided, tool_name must be one of them.\n"
-        "You receive previously executed steps and their outputs.\n"
-        "Use those outputs to fill required IDs/arguments for subsequent steps.\n"
-        "If the goal is already completed, set done=true.\n"
-        "If more work is needed, set done=false and provide the NEXT single tool call only.\n"
-        "Do not return more than one step.\n"
-        "You are also given JSON Schemas for each allowed tool's input.\n"
-        "Use those schemas to choose valid argument names and value shapes.\n"
-        "Return only JSON matching the schema."
-    )
+    system = _load_system_prompt()
 
     schemas_json = json.dumps(tool_schemas or {}, ensure_ascii=False)
     executed_json = _summarize_executed_steps(executed_steps or [])
@@ -68,6 +68,13 @@ async def plan_next_step(
         f"Allowed tools (IDs):\n{allowed_tools if allowed_tools else 'ANY'}\n\n"
         "Tool input schemas (mapping from tool_id to JSON Schema):\n"
         f"{schemas_json}"
+    )
+
+    log.info(
+        "Planning next step: remaining_steps=%s, executed_steps=%s, allowed_tools=%s",
+        remaining_steps,
+        len(executed_steps or []),
+        len(allowed_tools or []),
     )
 
     resp = await client.responses.create(
@@ -87,4 +94,11 @@ async def plan_next_step(
     )
 
     data = json.loads(_extract_output_text(resp))
-    return NextStepPlan(**data)
+    plan = NextStepPlan(**data)
+    log.info(
+        "Planner output: done=%s tool_name=%s has_arguments=%s",
+        plan.done,
+        plan.tool_name,
+        bool(plan.arguments),
+    )
+    return plan
