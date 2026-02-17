@@ -32,11 +32,6 @@ class OrchestratorService:
         self._tool_id_to_schema: dict[str, Any] = {}
         self._discovery_lock = asyncio.Lock()
 
-    async def initialize(self) -> None:
-        # Discovery is lazy and happens on the first request, once we have a user token.
-        self._tool_id_to_tool = {}
-        self._tool_id_to_schema = {}
-
     async def handle_text(self, *, text: str, token: str):
         await self._ensure_tools_discovered(token)
 
