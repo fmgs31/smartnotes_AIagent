@@ -1,6 +1,7 @@
-﻿import asyncio
+import asyncio
 import json
 import logging
+from contextlib import AsyncExitStack
 from typing import Any
 
 from app.llm_router import plan_next_step
@@ -33,94 +34,114 @@ class OrchestratorService:
         self._discovery_lock = asyncio.Lock()
 
     async def handle_text(self, *, text: str, token: str):
-        await self._ensure_tools_discovered(token)
+        async with AsyncExitStack() as session_stack:
+            server_clients: dict[str, MCPClient] = {}
 
-        allowed_tools = list(self._tool_id_to_tool.keys())
-        tool_schemas = {tool_id: self._tool_id_to_schema.get(tool_id) for tool_id in allowed_tools}
+            async def _get_or_open_client(server: ServerConfig) -> MCPClient:
+                existing = server_clients.get(server.id)
+                if existing is not None:
+                    return existing
 
-        steps: list[ExecutedToolStep] = []
-        planning_context: list[dict[str, Any]] = []
-        previous_signature: tuple[str, str] | None = None
-
-        for step_idx in range(1, self.max_plan_steps + 1):
-            next_step: NextStepPlan = await plan_next_step(
-                model=self.model,
-                text=text,
-                allowed_tools=allowed_tools,
-                tool_schemas=tool_schemas,
-                executed_steps=planning_context,
-                remaining_steps=self.max_plan_steps - step_idx + 1,
-            )
-
-            if next_step.done:
-                break
-
-            tool_plan = ToolCallPlan(
-                tool_name=next_step.tool_name,
-                arguments=next_step.arguments or {},
-            )
-            selected = self._tool_id_to_tool.get(tool_plan.tool_name)
-            if selected is None:
-                raise ValueError(f"Planned tool '{tool_plan.tool_name}' is not available")
-            server, real_tool_name = selected
-
-            signature = (tool_plan.tool_name, self._stable_json(tool_plan.arguments))
-            if signature == previous_signature:
-                raise ValueError(
-                    f"Planner loop detected: repeated step '{tool_plan.tool_name}' with identical arguments"
+                mcp_client = MCPClient(
+                    server_url=server.url,
+                    timeout_s=self.mcp_timeout_s,
+                    max_retries=self.max_retries,
                 )
-            previous_signature = signature
+                await session_stack.enter_async_context(mcp_client.session(token=token))
+                server_clients[server.id] = mcp_client
+                return mcp_client
 
-            log.info(
-                "Step=%s Server=%s ToolId=%s Tool=%s",
-                step_idx,
-                server.id,
-                tool_plan.tool_name,
-                real_tool_name,
-            )
-            if next_step.explanation:
-                log.info("Planner rationale: %s", next_step.explanation)
-            log.info("LLM tool plan: %s", tool_plan.model_dump())
+            if not self._tool_id_to_tool:
+                for server in self.registry.all():
+                    await _get_or_open_client(server)
 
-            mcp_client = MCPClient(
-                server_url=server.url,
-                timeout_s=self.mcp_timeout_s,
-                max_retries=self.max_retries,
-            )
+            await self._ensure_tools_discovered(token, preopened_clients=server_clients)
 
-            result = await mcp_client.call_tool(
-                token=token,
-                tool_name=real_tool_name,
-                arguments=tool_plan.arguments,
-            )
-            result_type, result_len = self._result_metrics(result)
-            log.info(f"Step={step_idx} result_type={result_type} result_len={result_len}")
+            allowed_tools = list(self._tool_id_to_tool.keys())
+            tool_schemas = {tool_id: self._tool_id_to_schema.get(tool_id) for tool_id in allowed_tools}
 
-            steps.append(
-                ExecutedToolStep(
-                    step=step_idx,
-                    server_id=server.id,
-                    tool_call=tool_plan,
-                    mcp_result=result,
+            steps: list[ExecutedToolStep] = []
+            planning_context: list[dict[str, Any]] = []
+            previous_signature: tuple[str, str] | None = None
+
+            for step_idx in range(1, self.max_plan_steps + 1):
+                next_step: NextStepPlan = await plan_next_step(
+                    model=self.model,
+                    text=text,
+                    allowed_tools=allowed_tools,
+                    tool_schemas=tool_schemas,
+                    executed_steps=planning_context,
+                    remaining_steps=self.max_plan_steps - step_idx + 1,
                 )
-            )
-            planning_context.append(
-                {
-                    "step": step_idx,
-                    "server_id": server.id,
-                    "tool_name": tool_plan.tool_name,
-                    "arguments": tool_plan.arguments,
-                    "result_summary": self._summarize_mcp_result(result),
-                }
-            )
 
-        if not steps:
-            raise ValueError("Planner did not produce any executable step for this request")
+                if next_step.done:
+                    break
 
-        last_step = steps[-1]
-        return last_step.server_id, last_step.tool_call, last_step.mcp_result, steps
+                tool_plan = ToolCallPlan(
+                    tool_name=next_step.tool_name,
+                    arguments=next_step.arguments or {},
+                )
+                selected = self._tool_id_to_tool.get(tool_plan.tool_name)
+                if selected is None:
+                    raise ValueError(f"Planned tool '{tool_plan.tool_name}' is not available")
+                server, real_tool_name = selected
 
-    async def _ensure_tools_discovered(self, token: str) -> None:
+                signature = (tool_plan.tool_name, self._stable_json(tool_plan.arguments))
+                if signature == previous_signature:
+                    raise ValueError(
+                        f"Planner loop detected: repeated step '{tool_plan.tool_name}' with identical arguments"
+                    )
+                previous_signature = signature
+
+                log.info(
+                    "Step=%s Server=%s ToolId=%s Tool=%s",
+                    step_idx,
+                    server.id,
+                    tool_plan.tool_name,
+                    real_tool_name,
+                )
+                if next_step.explanation:
+                    log.info("Planner rationale: %s", next_step.explanation)
+                log.info("LLM tool plan: %s", tool_plan.model_dump())
+
+                mcp_client = await _get_or_open_client(server)
+                result = await mcp_client.call_tool(
+                    token=token,
+                    tool_name=real_tool_name,
+                    arguments=tool_plan.arguments,
+                )
+                result_type, result_len = self._result_metrics(result)
+                log.info(f"Step={step_idx} result_type={result_type} result_len={result_len}")
+
+                steps.append(
+                    ExecutedToolStep(
+                        step=step_idx,
+                        server_id=server.id,
+                        tool_call=tool_plan,
+                        mcp_result=result,
+                    )
+                )
+                planning_context.append(
+                    {
+                        "step": step_idx,
+                        "server_id": server.id,
+                        "tool_name": tool_plan.tool_name,
+                        "arguments": tool_plan.arguments,
+                        "result_summary": self._summarize_mcp_result(result),
+                    }
+                )
+
+            if not steps:
+                raise ValueError("Planner did not produce any executable step for this request")
+
+            last_step = steps[-1]
+            return last_step.server_id, last_step.tool_call, last_step.mcp_result, steps
+
+    async def _ensure_tools_discovered(
+        self,
+        token: str,
+        preopened_clients: dict[str, MCPClient] | None = None,
+    ) -> None:
         if self._tool_id_to_tool:
             return
 
@@ -132,13 +153,17 @@ class OrchestratorService:
             tool_id_to_schema: dict[str, Any] = {}
 
             for server in self.registry.all():
-                mcp_client = MCPClient(
-                    server_url=server.url,
-                    timeout_s=self.mcp_timeout_s,
-                    max_retries=self.max_retries,
-                )
-
-                raw_tools = await mcp_client.list_tools(token=token)
+                mcp_client = preopened_clients.get(server.id) if preopened_clients is not None else None
+                if mcp_client is None:
+                    mcp_client = MCPClient(
+                        server_url=server.url,
+                        timeout_s=self.mcp_timeout_s,
+                        max_retries=self.max_retries,
+                    )
+                    async with mcp_client.session(token=token):
+                        raw_tools = await mcp_client.list_tools(token=token)
+                else:
+                    raw_tools = await mcp_client.list_tools(token=token)
                 tools_with_schema = self._extract_tools_with_schema(raw_tools)
                 discovered_tools = list(tools_with_schema.keys())
 
