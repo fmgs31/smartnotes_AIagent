@@ -93,6 +93,8 @@ class OrchestratorService:
                 tool_name=real_tool_name,
                 arguments=tool_plan.arguments,
             )
+            result_type, result_len = self._result_metrics(result)
+            log.info(f"Step={step_idx} result_type={result_type} result_len={result_len}")
 
             steps.append(
                 ExecutedToolStep(
@@ -217,3 +219,14 @@ class OrchestratorService:
             return json.dumps(value, sort_keys=True, ensure_ascii=False)
         except Exception:
             return str(value)
+
+    @staticmethod
+    def _result_metrics(result: Any) -> tuple[str, int]:
+        result_type = type(result).__name__
+        try:
+            if isinstance(result, (str, bytes, bytearray)):
+                return result_type, len(result)
+            encoded = json.dumps(result, ensure_ascii=False, default=str)
+            return result_type, len(encoded)
+        except Exception:
+            return result_type, len(str(result))
