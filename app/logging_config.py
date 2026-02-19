@@ -8,7 +8,7 @@ def configure_app_logging() -> None:
     root.setLevel(logging.WARNING)
 
     formatter = logging.Formatter("%(levelname)s:%(name)s:%(message)s")
-    for logger_name in ("service", "llm_router"):
+    for logger_name in ("service", "llm_router", "api"):
         logger = logging.getLogger(logger_name)
         logger.setLevel(logging.INFO)
         logger.propagate = False

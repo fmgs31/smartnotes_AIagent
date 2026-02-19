@@ -1,6 +1,8 @@
-import logging
+﻿import logging
+from io import BytesIO
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, Form, UploadFile
+from openai import AsyncOpenAI
 
 from app.config import settings
 from app.error_mapping import map_exception_to_http
@@ -13,6 +15,7 @@ configure_app_logging()
 log = logging.getLogger("api")
 
 app = FastAPI(title="MCP + LLM Gateway", version="1.0.0")
+openai_client = AsyncOpenAI()
 
 registry = ServerRegistry.load_from_file(settings.servers_config_path)
 svc = OrchestratorService(
@@ -45,3 +48,30 @@ async def run(req: InboundRequest):
     except Exception as e:
         log.exception("Request failed")
         raise map_exception_to_http(e)
+
+
+@app.post("/run-audio", response_model=OutboundResponse)
+async def run_audio(audio: UploadFile = File(...), mcp_token: str = Form(...)):
+    try:
+        audio_bytes = await audio.read()
+        if not audio_bytes:
+            raise ValueError("Audio file is empty")
+
+        audio_stream = BytesIO(audio_bytes)
+        audio_stream.name = audio.filename or "audio.webm"
+
+        transcription = await openai_client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_stream,
+        )
+        transcript_text = (getattr(transcription, "text", "") or "").strip()
+        log.info(f"Transcription:{transcript_text}")
+        if not transcript_text:
+            raise ValueError("Whisper transcription returned empty text")
+    except Exception as e:
+        log.exception("Audio transcription failed")
+        raise map_exception_to_http(e)
+    finally:
+        await audio.close()
+
+    return await run(InboundRequest(text=transcript_text, mcp_token=mcp_token))
