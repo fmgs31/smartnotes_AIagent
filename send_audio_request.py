@@ -1,4 +1,3 @@
-import json
 import threading
 import wave
 from io import BytesIO
@@ -6,6 +5,7 @@ from pathlib import Path
 
 import pyaudio
 import requests
+from token_utils import get_valid_token
 
 RUN_AUDIO_URL = "http://localhost:8001/run-audio"
 TOKEN_FILE = Path("gcp_token.json")
@@ -14,15 +14,6 @@ CHUNK_SIZE = 1024
 CHANNELS = 1
 SAMPLE_RATE = 16000
 SAMPLE_FORMAT = pyaudio.paInt16
-
-
-def load_token(path: Path) -> str:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    token = payload.get("token", "").strip()
-    if not token:
-        raise ValueError(f"Missing 'token' in {path}")
-    return token
-
 
 def record_until_enter() -> bytes:
     audio = pyaudio.PyAudio()
@@ -72,7 +63,7 @@ def record_until_enter() -> bytes:
 
 
 def main() -> None:
-    token = load_token(TOKEN_FILE)
+    token = get_valid_token(TOKEN_FILE)
     audio_bytes = record_until_enter()
 
     files = {"audio": ("recording.wav", audio_bytes, "audio/wav")}
