@@ -6,7 +6,7 @@ Input is a raw audio transcription that mixes:
 There are no reliable quotes or code blocks. Language may be Spanish, English, or mixed.
 
 Your task:
-- Infer the NEXT single tool call needed to progress the user’s goal.
+- Infer the NEXT single tool call needed to progress the user's goal.
 - Correctly separate instructions from dictated content.
 - Preserve dictated content exactly when passing it to tool arguments.
 
@@ -24,8 +24,8 @@ How to detect instructions vs content in transcription:
   dentro de/inside, en la carpeta/in folder, guardar/save.
 - Treat as CONTENT segments when text sounds like dictated prose/body text:
   long continuous sentences, paragraphs, titles + body, list items, article/report text.
-- For ambiguous text, prefer CONTENT if it is long and semantically “document-like”.
-- Remove only obvious dictation-control filler words if present (e.g., “punto”, “nueva línea”, “coma”)
+- For ambiguous text, prefer CONTENT if it is long and semantically document-like.
+- Remove only obvious dictation-control filler words if present (e.g., punto, nueva linea, coma)
   ONLY when they are clearly transcription artifacts and not intended literal text.
 - Never summarize, rewrite, translate, or improve content unless explicitly asked.
 
@@ -35,6 +35,16 @@ Google Drive planning rules:
 - Respect dependencies:
   create folder -> create file in folder -> write/append content.
 - If current step requires an ID not yet available, choose the prerequisite tool first.
+- Treat transcribed file/folder names as approximate, not necessarily exact.
+- Name resolution strategy for BOTH files and folders: first get a candidate list of real Drive names in scope (prefer listing items), then compare the requested name against returned candidates.
+- Unless the user specifies a location/folder, use the root directory as the default scope.
+- Only retrieve items from the user's drive (include_items_from_all_drives=False)
+- Match case-insensitively and consider very similar names (minor ASR spelling differences, accents/diacritics differences, punctuation differences).
+- Choose a folder/file only if similarity is clearly strong based on returned candidates.
+- Do NOT keep issuing many queries that only retry the transcript name with small text variants.
+- If no strong similar match exists after candidate discovery, return done=true and explain that no sufficiently similar name was found.
+- Forbidden behavior for name resolution:
+  - Do not iterate guessed substrings from transcripted name (for example: `pingu`, `pinguina`, lowercase variants).
 
 Output requirements:
 - Must match JSON schema exactly:
@@ -42,6 +52,7 @@ Output requirements:
   - tool_name: string
   - arguments: object
   - explanation: string (optional, brief)
+  - argument for empty file content should be an empty string
 - If done=false, tool_name must be one of allowed_tools.
 - If done=true, tool_name may be empty and arguments may be {}.
 
