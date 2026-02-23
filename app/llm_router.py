@@ -70,12 +70,6 @@ async def plan_next_step(
         f"{schemas_json}"
     )
 
-    log.info(
-        "Planning next step: remaining_steps=%s, executed_steps=%s, allowed_tools=%s",
-        remaining_steps,
-        len(executed_steps or []),
-        len(allowed_tools or []),
-    )
 
     resp = await client.responses.create(
         model=model,
@@ -95,10 +89,8 @@ async def plan_next_step(
 
     data = json.loads(_extract_output_text(resp))
     plan = NextStepPlan(**data)
+    log.info(f"Data: {data}")
     log.info(
-        "Planner output: done=%s tool_name=%s has_arguments=%s",
-        plan.done,
-        plan.tool_name,
-        bool(plan.arguments),
+        f"Planner output: done={plan.done} tool_name={plan.tool_name} has_arguments={bool(plan.arguments)} \n"
     )
     return plan

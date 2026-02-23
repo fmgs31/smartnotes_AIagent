@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 import logging
 from contextlib import AsyncExitStack
@@ -102,7 +102,6 @@ class OrchestratorService:
                 )
                 if next_step.explanation:
                     log.info("Planner rationale: %s", next_step.explanation)
-                log.info("LLM tool plan: %s", tool_plan.model_dump())
 
                 mcp_client = await _get_or_open_client(server)
                 result = await mcp_client.call_tool(
@@ -111,7 +110,7 @@ class OrchestratorService:
                     arguments=tool_plan.arguments,
                 )
                 result_type, result_len = self._result_metrics(result)
-                log.info(f"Step={step_idx} result_type={result_type} result_len={result_len}")
+                log.info(f"\n -------------\nMCP SERVER RESULT: {result}\n")
 
                 steps.append(
                     ExecutedToolStep(
@@ -174,13 +173,6 @@ class OrchestratorService:
                     if configured_allowed is None or tool_name in configured_allowed
                 ]
 
-                log.info(
-                    "Server=%s discovered_tools=%s allowed_tools=%s effective_tools=%s",
-                    server.id,
-                    discovered_tools,
-                    server.allowed_tools,
-                    effective_tools,
-                )
 
                 for tool_name in effective_tools:
                     tool_id = self._build_tool_id(server.id, tool_name)
