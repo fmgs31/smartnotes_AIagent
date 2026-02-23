@@ -1,9 +1,10 @@
 ﻿import logging
 from io import BytesIO
 
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import Depends, FastAPI, File, Form, UploadFile
 from openai import AsyncOpenAI
 
+from app.auth import require_api_key, require_authorized_user
 from app.config import settings
 from app.error_mapping import map_exception_to_http
 from app.logging_config import configure_app_logging
@@ -32,8 +33,9 @@ def health():
     return {"ok": True}
 
 
-@app.post("/run", response_model=OutboundResponse)
+@app.post("/run", response_model=OutboundResponse, dependencies=[Depends(require_api_key)])
 async def run(req: InboundRequest):
+    await require_authorized_user(req.mcp_token)
     try:
         sid, tool_call, mcp_result, steps = await svc.handle_text(
             text=req.text,
@@ -50,8 +52,9 @@ async def run(req: InboundRequest):
         raise map_exception_to_http(e)
 
 
-@app.post("/run-audio", response_model=OutboundResponse)
+@app.post("/run-audio", response_model=OutboundResponse, dependencies=[Depends(require_api_key)])
 async def run_audio(audio: UploadFile = File(...), mcp_token: str = Form(...)):
+    await require_authorized_user(mcp_token)
     try:
         audio_bytes = await audio.read()
         if not audio_bytes:

@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     # Servers config
     servers_config_path: str = "servers.json"
 
+    # App-level API key (gates access from mobile app)
+    app_api_key: str
+
+    # Path to the JSON file listing allowed user emails
+    allowed_users_path: str = "allowed_users.json"
+
     # Runtime
     mcp_timeout_s: float = 20.0
     max_retries: int = 0

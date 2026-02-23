@@ -9,6 +9,7 @@ from token_utils import get_valid_token
 
 RUN_AUDIO_URL = "http://localhost:8001/run-audio"
 TOKEN_FILE = Path("gcp_token.json")
+APP_API_KEY = ""
 
 CHUNK_SIZE = 1024
 CHANNELS = 1
@@ -68,7 +69,8 @@ def main() -> None:
 
     files = {"audio": ("recording.wav", audio_bytes, "audio/wav")}
     data = {"mcp_token": token}
-    response = requests.post(RUN_AUDIO_URL, files=files, data=data, timeout=120)
+    headers = {"X-API-Key": APP_API_KEY}
+    response = requests.post(RUN_AUDIO_URL, files=files, data=data, headers=headers, timeout=120)
     print(f"Status: {response.status_code}")
     print(response.text)
 
