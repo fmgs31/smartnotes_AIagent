@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.git/
+.gitignore
+.vscode/
+.env
+servers/
+data/
+gcp_token.json
+client_secret.json
+send_text_request.py
+send_audio_request.py
+access_token_getter.py
+token_utils.py
+shcemas.json
+x
+x.json

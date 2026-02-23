@@ -1,4 +1,6 @@
+import os
 from dataclasses import dataclass
+
 from app.utils import load_json
 
 
@@ -35,6 +37,11 @@ class ServerRegistry:
             if allowed_tools is not None:
                 if not isinstance(allowed_tools, list) or not all(isinstance(t, str) and t for t in allowed_tools):
                     raise ValueError(f"Server '{sid}' has invalid allowed_tools; expected non-empty strings")
+
+            # Allow the URL to be overridden at runtime via an env var.
+            # Convention: server id "google-workspace" → env var GOOGLE_WORKSPACE_URL
+            env_key = sid.upper().replace("-", "_") + "_URL"
+            url = os.environ.get(env_key) or url
 
             servers[sid] = ServerConfig(id=sid, url=url, allowed_tools=allowed_tools)
 
