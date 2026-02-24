@@ -16,12 +16,18 @@ class Settings(BaseSettings):
     # App-level API key (gates access from mobile app)
     app_api_key: str
 
-    # Path to the JSON file listing allowed user emails
+    # Comma-separated list of allowed emails (takes priority over the JSON file).
+    # Set this env var on Cloud Run to add/remove users without rebuilding the image.
+    # Example: ALLOWED_EMAILS=alice@gmail.com,bob@gmail.com
+    allowed_emails: str = ""
+
+    # Fallback: path to a JSON file listing allowed emails (used locally when
+    # ALLOWED_EMAILS env var is not set).
     allowed_users_path: str = "allowed_users.json"
 
     # Runtime
     mcp_timeout_s: float = 20.0
-    max_retries: int = 0
+    max_retries: int = 3
     max_plan_steps: int = 5
 
 

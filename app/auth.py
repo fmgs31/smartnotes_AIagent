@@ -10,11 +10,14 @@ _GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 
 
 def _load_allowed_emails() -> set[str]:
+    # Prefer the env var (Cloud Run); fall back to the JSON file (local dev).
+    if settings.allowed_emails:
+        return {e.strip().lower() for e in settings.allowed_emails.split(",") if e.strip()}
     data = load_json(settings.allowed_users_path)
     return {email.lower() for email in data.get("allowed_emails", [])}
 
 
-# Loaded once at startup. Restart the server to pick up changes to allowed_users.json.
+# Loaded once at startup.
 _allowed_emails: set[str] = _load_allowed_emails()
 
 
