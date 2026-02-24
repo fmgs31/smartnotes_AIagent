@@ -1,5 +1,5 @@
-import asyncio
-from contextlib import asynccontextmanager
+﻿import asyncio
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import AsyncIterator
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter
 
@@ -15,6 +15,7 @@ class MCPClient:
         self.max_retries = max_retries
         self._client: Client | None = None
         self._session_token: str | None = None
+        self._exit_stack: AsyncExitStack | None = None
 
     def _retry_decorator(self):
         # attempts = 1 + max_retries
@@ -34,32 +35,27 @@ class MCPClient:
                 raise ValueError("MCPClient session is already bound to a different token")
             return
 
-        @_retry_decorator_wrapper(self._retry_decorator())
+        @self._retry_decorator()
         async def _do_open():
-            transport = self._build_transport(token)
-            client = Client(transport=transport)
-            try:
-                await client.__aenter__()
-            except Exception:
-                try:
-                    await client.__aexit__(None, None, None)
-                except Exception:
-                    pass
-                raise
-            return client
+            stack = AsyncExitStack()
+            client = await stack.enter_async_context(
+                Client(transport=self._build_transport(token))
+            )
+            return stack, client
 
-        client = await _do_open()
-        self._client = client
+        self._exit_stack, self._client = await _do_open()
         self._session_token = token
 
     async def _close_session(self) -> None:
-        if self._client is None:
+        if self._exit_stack is None:
             return
 
-        client = self._client
+        # Null out before awaiting so a concurrent _close_session call sees None
+        # and returns immediately, preventing a double-close.
+        stack, self._exit_stack = self._exit_stack, None
         self._client = None
         self._session_token = None
-        await client.__aexit__(None, None, None)
+        await stack.aclose()
 
     @asynccontextmanager
     async def session(self, *, token: str | None = None) -> AsyncIterator["MCPClient"]:
@@ -80,13 +76,13 @@ class MCPClient:
         active_client = self._active_client(token)
 
         if active_client is not None:
-            @_retry_decorator_wrapper(self._retry_decorator())
+            @self._retry_decorator()
             async def _do_list_connected():
                 return await asyncio.wait_for(active_client.list_tools(), timeout=self.timeout_s)
 
             return await _do_list_connected()
 
-        @_retry_decorator_wrapper(self._retry_decorator())
+        @self._retry_decorator()
         async def _do_list():
             transport = self._build_transport(token)
             async with Client(transport=transport) as client:
@@ -98,7 +94,7 @@ class MCPClient:
         active_client = self._active_client(token)
 
         if active_client is not None:
-            @_retry_decorator_wrapper(self._retry_decorator())
+            @self._retry_decorator()
             async def _do_call_connected():
                 return await asyncio.wait_for(
                     active_client.call_tool(name=tool_name, arguments=arguments),
@@ -107,7 +103,7 @@ class MCPClient:
 
             return await _do_call_connected()
 
-        @_retry_decorator_wrapper(self._retry_decorator())
+        @self._retry_decorator()
         async def _do_call():
             transport = self._build_transport(token)
             async with Client(transport=transport) as client:
@@ -117,11 +113,3 @@ class MCPClient:
                 )
 
         return await _do_call()
-
-
-def _retry_decorator_wrapper(deco):
-    # tiny helper so we can build the retry decorator dynamically
-    def wrap(fn):
-        return deco(fn)
-
-    return wrap
