@@ -18,9 +18,10 @@ class MCPClient:
 
     def _retry_decorator(self):
         # attempts = 1 + max_retries
+        # initial/max chosen to cover Cloud Run cold-start windows (typically 5-15s).
         return retry(
             stop=stop_after_attempt(1 + self.max_retries),
-            wait=wait_exponential_jitter(initial=0.3, max=3.0),
+            wait=wait_exponential_jitter(initial=1.5, max=10.0),
         )
 
     def _build_transport(self, token: str | None):
@@ -33,9 +34,21 @@ class MCPClient:
                 raise ValueError("MCPClient session is already bound to a different token")
             return
 
-        transport = self._build_transport(token)
-        client = Client(transport=transport)
-        await client.__aenter__()
+        @_retry_decorator_wrapper(self._retry_decorator())
+        async def _do_open():
+            transport = self._build_transport(token)
+            client = Client(transport=transport)
+            try:
+                await client.__aenter__()
+            except Exception:
+                try:
+                    await client.__aexit__(None, None, None)
+                except Exception:
+                    pass
+                raise
+            return client
+
+        client = await _do_open()
         self._client = client
         self._session_token = token
 
