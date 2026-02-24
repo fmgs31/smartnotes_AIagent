@@ -19,6 +19,9 @@ app = FastAPI(title="MCP + LLM Gateway", version="1.0.0")
 openai_client = AsyncOpenAI()
 
 registry = ServerRegistry.load_from_file(settings.servers_config_path)
+for _srv in registry.all():
+    log.info("Registered MCP server: id=%s url=%s", _srv.id, _srv.url)
+
 svc = OrchestratorService(
     registry=registry,
     model=settings.openai_model,

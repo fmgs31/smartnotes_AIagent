@@ -111,6 +111,7 @@ class OrchestratorService:
                 )
                 result_type, result_len = self._result_metrics(result)
                 log.info(f"\n -------------\nMCP SERVER RESULT: {result}\n")
+                log.info(f"Step={step_idx} result_type={result_type} result_len={result_len}")
 
                 steps.append(
                     ExecutedToolStep(

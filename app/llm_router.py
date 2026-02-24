@@ -69,7 +69,8 @@ async def plan_next_step(
         "Tool input schemas (mapping from tool_id to JSON Schema):\n"
         f"{schemas_json}"
     )
-
+    
+    log.info( f"Planning next step: remaining_steps={remaining_steps}, executed_steps={len(executed_steps or [])}" )
 
     resp = await client.responses.create(
         model=model,
