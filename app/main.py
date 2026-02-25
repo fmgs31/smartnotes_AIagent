@@ -25,8 +25,6 @@ for _srv in registry.all():
 svc = OrchestratorService(
     registry=registry,
     model=settings.openai_model,
-    mcp_timeout_s=settings.mcp_timeout_s,
-    max_retries=settings.max_retries,
     max_plan_steps=settings.max_plan_steps,
 )
 

@@ -10,7 +10,6 @@ from app.schemas import ExecutedToolStep, NextStepPlan, ToolCallPlan
 from app.server_registry import ServerConfig, ServerRegistry
 
 log = logging.getLogger("service")
-log.setLevel(logging.INFO)
 
 
 class OrchestratorService:
@@ -18,14 +17,10 @@ class OrchestratorService:
         self,
         registry: ServerRegistry,
         model: str,
-        mcp_timeout_s: float,
-        max_retries: int,
         max_plan_steps: int,
     ):
         self.registry = registry
         self.model = model
-        self.mcp_timeout_s = mcp_timeout_s
-        self.max_retries = max_retries
         self.max_plan_steps = max_plan_steps
         # Maps fully-qualified tool id -> (server_config, real_tool_name)
         self._tool_id_to_tool: dict[str, tuple[ServerConfig, str]] = {}
@@ -42,11 +37,7 @@ class OrchestratorService:
                 if existing is not None:
                     return existing
 
-                mcp_client = MCPClient(
-                    server_url=server.url,
-                    timeout_s=self.mcp_timeout_s,
-                    max_retries=self.max_retries,
-                )
+                mcp_client = MCPClient(server_url=server.url)
                 await session_stack.enter_async_context(mcp_client.session(token=token))
                 server_clients[server.id] = mcp_client
                 return mcp_client
@@ -110,7 +101,7 @@ class OrchestratorService:
                     arguments=tool_plan.arguments,
                 )
                 result_type, result_len = self._result_metrics(result)
-                log.info(f"\n -------------\nMCP SERVER RESULT: {result}\n")
+                log.debug(f"\n -------------\nMCP SERVER RESULT: {result}\n")
                 log.info(f"Step={step_idx} result_type={result_type} result_len={result_len}")
 
                 steps.append(
@@ -155,15 +146,10 @@ class OrchestratorService:
             for server in self.registry.all():
                 mcp_client = preopened_clients.get(server.id) if preopened_clients is not None else None
                 if mcp_client is None:
-                    mcp_client = MCPClient(
-                        server_url=server.url,
-                        timeout_s=self.mcp_timeout_s,
-                        max_retries=self.max_retries,
-                    )
-                    async with mcp_client.session(token=token):
-                        raw_tools = await mcp_client.list_tools(token=token)
-                else:
+                    mcp_client = MCPClient(server_url=server.url)
+                async with mcp_client.session(token=token):
                     raw_tools = await mcp_client.list_tools(token=token)
+
                 tools_with_schema = self._extract_tools_with_schema(raw_tools)
                 discovered_tools = list(tools_with_schema.keys())
 
@@ -226,7 +212,9 @@ class OrchestratorService:
     def _summarize_mcp_result(result: Any) -> str:
         if result is None:
             return ""
-        text = result if isinstance(result, str) else str(result)
+        text = result 
+        if not isinstance(result, str):
+            text = str(result)
         if len(text) > 1200:
             return text[:1200] + "...(truncated)"
         return text

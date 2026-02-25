@@ -25,9 +25,13 @@ class Settings(BaseSettings):
     # ALLOWED_EMAILS env var is not set).
     allowed_users_path: str = "allowed_users.json"
 
-    # Runtime
+    # MCP client — retry/timeout settings apply to all servers (Cloud Run platform-level)
     mcp_timeout_s: float = 20.0
-    max_retries: int = 3
+    mcp_max_retries: int = 3
+    mcp_retry_initial_wait_s: float = 1.5
+    mcp_retry_max_wait_s: float = 10.0
+
+    # Orchestrator
     max_plan_steps: int = 5
 
 

@@ -7,7 +7,6 @@ from openai import AsyncOpenAI
 from app.schemas import NextStepPlan
 
 log = logging.getLogger("llm_router")
-log.setLevel(logging.INFO)
 
 client = AsyncOpenAI()
 SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "next_step_system_prompt.txt"

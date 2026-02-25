@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import AsyncIterator
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter
@@ -6,23 +6,26 @@ from tenacity import retry, stop_after_attempt, wait_exponential_jitter
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
+from app.config import settings
+
 
 class MCPClient:
-    def __init__(self, server_url: str, timeout_s: float, max_retries: int):
+    def __init__(self, server_url: str):
         # Normalize trailing slash to avoid redirect hops like /mcp/ -> /mcp.
         self.server_url = server_url.rstrip("/")
-        self.timeout_s = timeout_s
-        self.max_retries = max_retries
         self._client: Client | None = None
         self._session_token: str | None = None
         self._exit_stack: AsyncExitStack | None = None
 
     def _retry_decorator(self):
-        # attempts = 1 + max_retries
-        # initial/max chosen to cover Cloud Run cold-start windows (typically 5-15s).
+        # Retry config reflects Cloud Run platform characteristics (cold-start windows),
+        # not anything specific to individual servers — so it lives in global settings.
         return retry(
-            stop=stop_after_attempt(1 + self.max_retries),
-            wait=wait_exponential_jitter(initial=1.5, max=10.0),
+            stop=stop_after_attempt(1 + settings.mcp_max_retries),
+            wait=wait_exponential_jitter(
+                initial=settings.mcp_retry_initial_wait_s,
+                max=settings.mcp_retry_max_wait_s,
+            ),
         )
 
     def _build_transport(self, token: str | None):
@@ -78,15 +81,14 @@ class MCPClient:
         if active_client is not None:
             @self._retry_decorator()
             async def _do_list_connected():
-                return await asyncio.wait_for(active_client.list_tools(), timeout=self.timeout_s)
+                return await asyncio.wait_for(active_client.list_tools(), timeout=settings.mcp_timeout_s)
 
             return await _do_list_connected()
 
         @self._retry_decorator()
         async def _do_list():
-            transport = self._build_transport(token)
-            async with Client(transport=transport) as client:
-                return await asyncio.wait_for(client.list_tools(), timeout=self.timeout_s)
+            async with Client(transport=self._build_transport(token)) as client:
+                return await asyncio.wait_for(client.list_tools(), timeout=settings.mcp_timeout_s)
 
         return await _do_list()
 
@@ -98,18 +100,17 @@ class MCPClient:
             async def _do_call_connected():
                 return await asyncio.wait_for(
                     active_client.call_tool(name=tool_name, arguments=arguments),
-                    timeout=self.timeout_s,
+                    timeout=settings.mcp_timeout_s,
                 )
 
             return await _do_call_connected()
 
         @self._retry_decorator()
         async def _do_call():
-            transport = self._build_transport(token)
-            async with Client(transport=transport) as client:
+            async with Client(transport=self._build_transport(token)) as client:
                 return await asyncio.wait_for(
                     client.call_tool(name=tool_name, arguments=arguments),
-                    timeout=self.timeout_s,
+                    timeout=settings.mcp_timeout_s,
                 )
 
         return await _do_call()
