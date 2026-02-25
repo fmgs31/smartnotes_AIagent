@@ -1,0 +1,8 @@
+{
+    "servers": [
+        {
+            "id": "test-server",
+            "url": "http://test-server/mcp/"
+        }
+    ]
+}
