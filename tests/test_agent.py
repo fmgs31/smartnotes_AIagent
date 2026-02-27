@@ -17,7 +17,7 @@ def _make_registry(*server_ids: str):
     return registry, servers
 
 
-def _make_service(*server_ids: str):
+def _make_agent(*server_ids: str):
     registry, servers = _make_registry(*server_ids or ("test-server",))
     svc = Agent(registry=registry, model="test-model", max_plan_steps=5)
     return svc, servers
@@ -47,7 +47,7 @@ class TestHandleText:
     @patch("app.agent.MCPClient")
     @patch("app.agent.plan_next_step")
     async def test_single_step_returns_result(self, mock_plan, mock_mcp_cls):
-        svc, servers = _make_service()
+        svc, servers = _make_agent()
         server = servers[0]
         mock_mcp_cls.return_value = _mcp_mock(call_result="3 documents found")
 
@@ -69,7 +69,7 @@ class TestHandleText:
     @patch("app.agent.MCPClient")
     @patch("app.agent.plan_next_step")
     async def test_multi_step_returns_last_result(self, mock_plan, mock_mcp_cls):
-        svc, servers = _make_service()
+        svc, servers = _make_agent()
         server = servers[0]
         mock_mcp_cls.return_value = _mcp_mock(call_result="second result")
 
@@ -93,7 +93,7 @@ class TestHandleText:
     @patch("app.agent.MCPClient")
     @patch("app.agent.plan_next_step")
     async def test_planner_immediately_done_raises(self, mock_plan, mock_mcp_cls):
-        svc, servers = _make_service()
+        svc, servers = _make_agent()
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
         mock_plan.return_value = NextStepPlan(done=True, tool_name="")
@@ -105,7 +105,7 @@ class TestHandleText:
     @patch("app.agent.MCPClient")
     @patch("app.agent.plan_next_step")
     async def test_loop_detection_raises(self, mock_plan, mock_mcp_cls):
-        svc, servers = _make_service()
+        svc, servers = _make_agent()
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
         same = NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "x"})
@@ -118,7 +118,7 @@ class TestHandleText:
     @patch("app.agent.MCPClient")
     @patch("app.agent.plan_next_step")
     async def test_unknown_tool_name_raises(self, mock_plan, mock_mcp_cls):
-        svc, servers = _make_service()
+        svc, servers = _make_agent()
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
         mock_plan.return_value = NextStepPlan(
@@ -134,7 +134,7 @@ class TestHandleText:
 
 class TestEnsureToolsDiscovered:
     async def test_discovers_and_caches_tools(self):
-        svc, servers = _make_service()
+        svc, servers = _make_agent()
         mock_client = _mcp_mock(tools=[_tool("search"), _tool("create")])
         preopened = {servers[0].id: mock_client}
 
@@ -144,7 +144,7 @@ class TestEnsureToolsDiscovered:
         assert "test-server.create" in svc._tool_id_to_tool
 
     async def test_second_call_uses_cache(self):
-        svc, servers = _make_service()
+        svc, servers = _make_agent()
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
         mock_client = _mcp_mock()
@@ -154,7 +154,7 @@ class TestEnsureToolsDiscovered:
         mock_client.list_tools.assert_not_called()
 
     async def test_no_tools_after_discovery_raises(self):
-        svc, servers = _make_service()
+        svc, servers = _make_agent()
         mock_client = _mcp_mock(tools=[])
         preopened = {servers[0].id: mock_client}
 
@@ -226,7 +226,14 @@ class TestSummarizeMcpResult:
         result = Agent._summarize_mcp_result(obj)
         assert isinstance(result, str)
 
-    # ── nextPageToken preservation ─────────────────────────────────────────────
+    def test_calltoolresult_long_text_truncated(self):
+        long_text = "item\n" * 1100  # >5000 chars
+        obj = _make_call_result(long_text)
+        result = Agent._summarize_mcp_result(obj)
+        assert result.endswith("...(truncated)")
+
+
+# ── nextPageToken preservation ─────────────────────────────────────────────
 
     def test_token_at_end_appended_after_truncation(self):
         # Token is beyond the limit — must be preserved.
