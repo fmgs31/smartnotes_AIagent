@@ -1,9 +1,13 @@
+import asyncio
+
 import httpx
 from fastapi import HTTPException
 from tenacity import RetryError
 
 
 def map_exception_to_http(exc: Exception) -> HTTPException:
+    if isinstance(exc, asyncio.TimeoutError):
+        return HTTPException(status_code=504, detail="MCP server request timed out")
     if isinstance(exc, KeyError):
         return HTTPException(status_code=400, detail=str(exc))
     if isinstance(exc, ValueError):
