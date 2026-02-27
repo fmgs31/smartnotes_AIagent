@@ -10,7 +10,7 @@ from app.error_mapping import map_exception_to_http
 from app.logging_config import configure_app_logging
 from app.schemas import InboundRequest, OutboundResponse
 from app.server_registry import ServerRegistry
-from app.service import OrchestratorService
+from app.agent import Agent
 
 configure_app_logging()
 log = logging.getLogger("api")
@@ -22,7 +22,7 @@ registry = ServerRegistry.load_from_file(settings.servers_config_path)
 for _srv in registry.all():
     log.info("Registered MCP server: id=%s url=%s", _srv.id, _srv.url)
 
-svc = OrchestratorService(
+svc = Agent(
     registry=registry,
     model=settings.openai_model,
     max_plan_steps=settings.max_plan_steps,

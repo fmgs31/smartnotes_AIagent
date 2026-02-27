@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.service import OrchestratorService
+from app.agent import Agent
 from app.server_registry import ServerConfig, ServerRegistry
 from app.schemas import NextStepPlan
 
@@ -19,7 +19,7 @@ def _make_registry(*server_ids: str):
 
 def _make_service(*server_ids: str):
     registry, servers = _make_registry(*server_ids or ("test-server",))
-    svc = OrchestratorService(registry=registry, model="test-model", max_plan_steps=5)
+    svc = Agent(registry=registry, model="test-model", max_plan_steps=5)
     return svc, servers
 
 
@@ -44,8 +44,8 @@ def _tool(name: str):
 # ── handle_text ───────────────────────────────────────────────────────────────
 
 class TestHandleText:
-    @patch("app.service.MCPClient")
-    @patch("app.service.plan_next_step")
+    @patch("app.agent.MCPClient")
+    @patch("app.agent.plan_next_step")
     async def test_single_step_returns_result(self, mock_plan, mock_mcp_cls):
         svc, servers = _make_service()
         server = servers[0]
@@ -66,8 +66,8 @@ class TestHandleText:
         assert result == "3 documents found"
         assert len(steps) == 1
 
-    @patch("app.service.MCPClient")
-    @patch("app.service.plan_next_step")
+    @patch("app.agent.MCPClient")
+    @patch("app.agent.plan_next_step")
     async def test_multi_step_returns_last_result(self, mock_plan, mock_mcp_cls):
         svc, servers = _make_service()
         server = servers[0]
@@ -90,8 +90,8 @@ class TestHandleText:
         assert len(steps) == 2
         assert result == "second result"
 
-    @patch("app.service.MCPClient")
-    @patch("app.service.plan_next_step")
+    @patch("app.agent.MCPClient")
+    @patch("app.agent.plan_next_step")
     async def test_planner_immediately_done_raises(self, mock_plan, mock_mcp_cls):
         svc, servers = _make_service()
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
@@ -102,8 +102,8 @@ class TestHandleText:
         with pytest.raises(ValueError, match="did not produce"):
             await svc.handle_text(text="do something", token="tok")
 
-    @patch("app.service.MCPClient")
-    @patch("app.service.plan_next_step")
+    @patch("app.agent.MCPClient")
+    @patch("app.agent.plan_next_step")
     async def test_loop_detection_raises(self, mock_plan, mock_mcp_cls):
         svc, servers = _make_service()
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
@@ -115,8 +115,8 @@ class TestHandleText:
         with pytest.raises(ValueError, match="loop detected"):
             await svc.handle_text(text="loop me", token="tok")
 
-    @patch("app.service.MCPClient")
-    @patch("app.service.plan_next_step")
+    @patch("app.agent.MCPClient")
+    @patch("app.agent.plan_next_step")
     async def test_unknown_tool_name_raises(self, mock_plan, mock_mcp_cls):
         svc, servers = _make_service()
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
@@ -133,45 +133,43 @@ class TestHandleText:
 # ── _ensure_tools_discovered ──────────────────────────────────────────────────
 
 class TestEnsureToolsDiscovered:
-    @patch("app.service.MCPClient")
-    async def test_discovers_and_caches_tools(self, mock_mcp_cls):
-        svc, _ = _make_service()
-        mock_mcp_cls.return_value = _mcp_mock(tools=[_tool("search"), _tool("create")])
+    async def test_discovers_and_caches_tools(self):
+        svc, servers = _make_service()
+        mock_client = _mcp_mock(tools=[_tool("search"), _tool("create")])
+        preopened = {servers[0].id: mock_client}
 
-        await svc._ensure_tools_discovered("tok")
+        await svc._ensure_tools_discovered("tok", preopened_clients=preopened)
 
         assert "test-server.search" in svc._tool_id_to_tool
         assert "test-server.create" in svc._tool_id_to_tool
 
-    @patch("app.service.MCPClient")
-    async def test_second_call_uses_cache(self, mock_mcp_cls):
+    async def test_second_call_uses_cache(self):
         svc, servers = _make_service()
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
+        mock_client = _mcp_mock()
 
-        await svc._ensure_tools_discovered("tok")
+        await svc._ensure_tools_discovered("tok", preopened_clients={"test-server": mock_client})
 
-        mock_mcp_cls.assert_not_called()
+        mock_client.list_tools.assert_not_called()
 
-    @patch("app.service.MCPClient")
-    async def test_no_tools_after_discovery_raises(self, mock_mcp_cls):
-        svc, _ = _make_service()
-        mock_mcp_cls.return_value = _mcp_mock(tools=[])
+    async def test_no_tools_after_discovery_raises(self):
+        svc, servers = _make_service()
+        mock_client = _mcp_mock(tools=[])
+        preopened = {servers[0].id: mock_client}
 
         with pytest.raises(ValueError, match="No tools available"):
-            await svc._ensure_tools_discovered("tok")
+            await svc._ensure_tools_discovered("tok", preopened_clients=preopened)
 
-    @patch("app.service.MCPClient")
-    async def test_allowed_tools_filter_is_applied(self, mock_mcp_cls):
+    async def test_allowed_tools_filter_is_applied(self):
         server = ServerConfig(id="s", url="http://s/mcp/", allowed_tools=["search"])
         registry = MagicMock(spec=ServerRegistry)
         registry.all.return_value = [server]
-        svc = OrchestratorService(registry=registry, model="m", max_plan_steps=5)
-        mock_mcp_cls.return_value = _mcp_mock(
-            tools=[_tool("search"), _tool("create")]  # create should be filtered out
-        )
+        svc = Agent(registry=registry, model="m", max_plan_steps=5)
+        mock_client = _mcp_mock(tools=[_tool("search"), _tool("create")])  # create should be filtered out
+        preopened = {"s": mock_client}
 
-        await svc._ensure_tools_discovered("tok")
+        await svc._ensure_tools_discovered("tok", preopened_clients=preopened)
 
         assert "s.search" in svc._tool_id_to_tool
         assert "s.create" not in svc._tool_id_to_tool
@@ -186,30 +184,30 @@ def _make_call_result(*texts: str):
     return SimpleNamespace(content=parts)
 
 
-LIMIT = OrchestratorService._SUMMARY_LIMIT
-MARKER = OrchestratorService._NEXT_PAGE_TOKEN_MARKER
+LIMIT = Agent._SUMMARY_LIMIT
+MARKER = Agent._NEXT_PAGE_TOKEN_MARKER
 
 
 class TestSummarizeMcpResult:
     # ── basic cases ────────────────────────────────────────────────────────────
 
     def test_none_returns_empty(self):
-        assert OrchestratorService._summarize_mcp_result(None) == ""
+        assert Agent._summarize_mcp_result(None) == ""
 
     def test_short_string_returned_unchanged(self):
-        assert OrchestratorService._summarize_mcp_result("hello") == "hello"
+        assert Agent._summarize_mcp_result("hello") == "hello"
 
     def test_string_exactly_at_limit_returned_unchanged(self):
         text = "x" * LIMIT
-        assert OrchestratorService._summarize_mcp_result(text) == text
+        assert Agent._summarize_mcp_result(text) == text
 
     def test_long_string_truncated(self):
         text = "x" * (LIMIT + 100)
-        result = OrchestratorService._summarize_mcp_result(text)
+        result = Agent._summarize_mcp_result(text)
         assert result == "x" * LIMIT + "...(truncated)"
 
     def test_non_string_is_converted_via_str(self):
-        result = OrchestratorService._summarize_mcp_result({"key": "val"})
+        result = Agent._summarize_mcp_result({"key": "val"})
         assert isinstance(result, str)
         assert "key" in result
 
@@ -217,15 +215,15 @@ class TestSummarizeMcpResult:
 
     def test_calltoolresult_text_is_extracted(self):
         obj = _make_call_result("item 1\nitem 2")
-        assert OrchestratorService._summarize_mcp_result(obj) == "item 1\nitem 2"
+        assert Agent._summarize_mcp_result(obj) == "item 1\nitem 2"
 
     def test_calltoolresult_multiple_parts_are_joined(self):
         obj = _make_call_result("part A", "part B")
-        assert OrchestratorService._summarize_mcp_result(obj) == "part A\npart B"
+        assert Agent._summarize_mcp_result(obj) == "part A\npart B"
 
     def test_calltoolresult_empty_content_falls_back_to_str(self):
         obj = SimpleNamespace(content=[])
-        result = OrchestratorService._summarize_mcp_result(obj)
+        result = Agent._summarize_mcp_result(obj)
         assert isinstance(result, str)
 
     # ── nextPageToken preservation ─────────────────────────────────────────────
@@ -234,14 +232,14 @@ class TestSummarizeMcpResult:
         # Token is beyond the limit — must be preserved.
         token_line = MARKER + "~!!~MYTOKEN"
         text = "a" * (LIMIT + 100) + "\n" + token_line
-        result = OrchestratorService._summarize_mcp_result(text)
+        result = Agent._summarize_mcp_result(text)
         assert result.endswith("...(truncated)\n" + token_line)
 
     def test_token_at_beginning_already_included_no_duplicate(self):
         # Token is within the first LIMIT chars — no need to append.
         token_line = MARKER + "~!!~MYTOKEN"
         text = token_line + "\n" + "a" * (LIMIT + 100)
-        result = OrchestratorService._summarize_mcp_result(text)
+        result = Agent._summarize_mcp_result(text)
         assert token_line in result[:LIMIT]
         assert result.count(token_line) == 1  # not duplicated
 
@@ -252,46 +250,46 @@ class TestSummarizeMcpResult:
         # Place the marker so it begins 10 chars before the limit.
         padding = "a" * (LIMIT - len(MARKER) - 10)
         text = padding + token_line + "\nextra stuff"
-        result = OrchestratorService._summarize_mcp_result(text)
+        result = Agent._summarize_mcp_result(text)
         assert result.endswith("...(truncated)\n" + token_line)
 
     def test_no_token_no_suffix(self):
         text = "a" * (LIMIT + 100)
-        result = OrchestratorService._summarize_mcp_result(text)
+        result = Agent._summarize_mcp_result(text)
         assert result == "a" * LIMIT + "...(truncated)"
 
     def test_calltoolresult_long_text_token_at_end_preserved(self):
         token_line = MARKER + "~!!~BIGTOKEN"
         long_text = "item\n" * 1100 + token_line  # >5000 chars
         obj = _make_call_result(long_text)
-        result = OrchestratorService._summarize_mcp_result(obj)
+        result = Agent._summarize_mcp_result(obj)
         assert result.endswith("...(truncated)\n" + token_line)
 
 
 class TestExtractToolsWithSchema:
     def test_list_of_objects_with_input_schema(self):
         tools = [SimpleNamespace(name="search", inputSchema={"type": "object"})]
-        result = OrchestratorService._extract_tools_with_schema(tools)
+        result = Agent._extract_tools_with_schema(tools)
         assert "search" in result
 
     def test_dict_format_with_tools_key(self):
-        result = OrchestratorService._extract_tools_with_schema(
+        result = Agent._extract_tools_with_schema(
             {"tools": [{"name": "search", "inputSchema": {"type": "object"}}]}
         )
         assert "search" in result
 
     def test_none_input_returns_empty_dict(self):
-        assert OrchestratorService._extract_tools_with_schema(None) == {}
+        assert Agent._extract_tools_with_schema(None) == {}
 
     def test_tool_without_name_is_skipped(self):
         tools = [SimpleNamespace(name=None, inputSchema={})]
-        assert OrchestratorService._extract_tools_with_schema(tools) == {}
+        assert Agent._extract_tools_with_schema(tools) == {}
 
     def test_tool_with_empty_name_is_skipped(self):
         tools = [SimpleNamespace(name="", inputSchema={})]
-        assert OrchestratorService._extract_tools_with_schema(tools) == {}
+        assert Agent._extract_tools_with_schema(tools) == {}
 
     def test_schema_falls_back_to_input_schema_variants(self):
         tool = SimpleNamespace(name="t", input_schema={"type": "object"})
-        result = OrchestratorService._extract_tools_with_schema([tool])
+        result = Agent._extract_tools_with_schema([tool])
         assert result["t"] == {"type": "object"}

@@ -9,10 +9,10 @@ from app.mcp_client import MCPClient
 from app.schemas import ExecutedToolStep, NextStepPlan, ToolCallPlan
 from app.server_registry import ServerConfig, ServerRegistry
 
-log = logging.getLogger("service")
+log = logging.getLogger("agent")
 
 
-class OrchestratorService:
+class Agent:
     def __init__(
         self,
         registry: ServerRegistry,
@@ -45,8 +45,7 @@ class OrchestratorService:
             if not self._tool_id_to_tool:
                 for server in self.registry.all():
                     await _get_or_open_client(server)
-
-            await self._ensure_tools_discovered(token, preopened_clients=server_clients)
+                await self._ensure_tools_discovered(token, preopened_clients=server_clients)
 
             allowed_tools = list(self._tool_id_to_tool.keys())
             tool_schemas = {tool_id: self._tool_id_to_schema.get(tool_id) for tool_id in allowed_tools}
@@ -131,7 +130,7 @@ class OrchestratorService:
     async def _ensure_tools_discovered(
         self,
         token: str,
-        preopened_clients: dict[str, MCPClient] | None = None,
+        preopened_clients: dict[str, MCPClient],
     ) -> None:
         if self._tool_id_to_tool:
             return
@@ -144,15 +143,8 @@ class OrchestratorService:
             tool_id_to_schema: dict[str, Any] = {}
 
             for server in self.registry.all():
-                mcp_client = preopened_clients.get(server.id) if preopened_clients is not None else None
-                if mcp_client is not None:
-                    # Session is already open and managed externally — call directly;
-                    # wrapping in session() would close it on exit, wasting the pre-open.
-                    raw_tools = await mcp_client.list_tools(token=token)
-                else:
-                    mcp_client = MCPClient(server_url=server.url)
-                    async with mcp_client.session(token=token):
-                        raw_tools = await mcp_client.list_tools(token=token)
+                mcp_client = preopened_clients[server.id]
+                raw_tools = await mcp_client.list_tools(token=token)
 
                 tools_with_schema = self._extract_tools_with_schema(raw_tools)
                 discovered_tools = list(tools_with_schema.keys())
@@ -233,14 +225,14 @@ class OrchestratorService:
         else:
             text = str(result)
 
-        if len(text) <= OrchestratorService._SUMMARY_LIMIT:
+        if len(text) <= Agent._SUMMARY_LIMIT:
             return text
 
         # Always preserve the nextPageToken even after truncation so the planner
         # can use it for cursor-based pagination.
         # Only append if the token falls beyond the truncation boundary; if it's
         # at the beginning (or anywhere within the limit) it is already included.
-        marker = OrchestratorService._NEXT_PAGE_TOKEN_MARKER
+        marker = Agent._NEXT_PAGE_TOKEN_MARKER
         token_idx = text.find(marker)
         token_suffix = ""
         if token_idx != -1:
@@ -249,10 +241,10 @@ class OrchestratorService:
             # Append the full token line only when it isn't already fully contained
             # within the truncated portion (covers: token at end, and the edge case
             # where it starts just before the boundary but extends beyond it).
-            if token_idx + len(token_line) > OrchestratorService._SUMMARY_LIMIT:
+            if token_idx + len(token_line) > Agent._SUMMARY_LIMIT:
                 token_suffix = f"\n{token_line}"
 
-        return text[: OrchestratorService._SUMMARY_LIMIT] + "...(truncated)" + token_suffix
+        return text[: Agent._SUMMARY_LIMIT] + "...(truncated)" + token_suffix
 
     @staticmethod
     def _stable_json(value: Any) -> str:
