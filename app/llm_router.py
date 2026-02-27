@@ -91,6 +91,6 @@ async def plan_next_step(
     plan = NextStepPlan(**data)
     log.info(f"Data: {data}")
     log.info(
-        f"Planner output: done={plan.done} tool_name={plan.tool_name} has_arguments={bool(plan.arguments)} \n"
+        f"Planner output: done={plan.done} tool_name={plan.tool_name} has_arguments={bool(plan.arguments)}"
     )
     return plan

@@ -10,12 +10,12 @@ def configure_app_logging() -> None:
     formatter = logging.Formatter("%(levelname)s:%(name)s:%(message)s")
     for logger_name in ("service", "llm_router", "api"):
         logger = logging.getLogger(logger_name)
-        logger.setLevel(logging.INFO)
+        logger.setLevel(logging.DEBUG)
         logger.propagate = False
         if logger.handlers:
             continue
 
         handler = logging.StreamHandler()
-        handler.setLevel(logging.INFO)
+        handler.setLevel(logging.DEBUG)
         handler.setFormatter(formatter)
         logger.addHandler(handler)
