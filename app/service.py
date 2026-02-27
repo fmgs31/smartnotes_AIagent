@@ -53,7 +53,7 @@ class OrchestratorService:
 
             steps: list[ExecutedToolStep] = []
             planning_context: list[dict[str, Any]] = []
-            previous_signature: tuple[str, str] | None = None
+            seen_signatures: set[tuple[str, str]] = set()
 
             for step_idx in range(1, self.max_plan_steps + 1):
                 next_step: NextStepPlan = await plan_next_step(
@@ -78,11 +78,11 @@ class OrchestratorService:
                 server, real_tool_name = selected
 
                 signature = (tool_plan.tool_name, self._stable_json(tool_plan.arguments))
-                if signature == previous_signature:
+                if signature in seen_signatures:
                     raise ValueError(
                         f"Planner loop detected: repeated step '{tool_plan.tool_name}' with identical arguments"
                     )
-                previous_signature = signature
+                seen_signatures.add(signature)
 
                 log.info(
                     "Step=%s Server=%s ToolId=%s Tool=%s",
@@ -145,10 +145,14 @@ class OrchestratorService:
 
             for server in self.registry.all():
                 mcp_client = preopened_clients.get(server.id) if preopened_clients is not None else None
-                if mcp_client is None:
-                    mcp_client = MCPClient(server_url=server.url)
-                async with mcp_client.session(token=token):
+                if mcp_client is not None:
+                    # Session is already open and managed externally — call directly;
+                    # wrapping in session() would close it on exit, wasting the pre-open.
                     raw_tools = await mcp_client.list_tools(token=token)
+                else:
+                    mcp_client = MCPClient(server_url=server.url)
+                    async with mcp_client.session(token=token):
+                        raw_tools = await mcp_client.list_tools(token=token)
 
                 tools_with_schema = self._extract_tools_with_schema(raw_tools)
                 discovered_tools = list(tools_with_schema.keys())
@@ -208,16 +212,47 @@ class OrchestratorService:
 
         return tools
 
+    _NEXT_PAGE_TOKEN_MARKER = "nextPageToken: "
+    _SUMMARY_LIMIT = 5000
+
     @staticmethod
     def _summarize_mcp_result(result: Any) -> str:
         if result is None:
             return ""
-        text = result 
-        if not isinstance(result, str):
+
+        # Extract plain text from CallToolResult content items; fall back to str().
+        if hasattr(result, "content"):
+            parts = [
+                item.text
+                for item in (result.content or [])
+                if hasattr(item, "text") and isinstance(item.text, str)
+            ]
+            text = "\n".join(parts) if parts else str(result)
+        elif isinstance(result, str):
+            text = result
+        else:
             text = str(result)
-        if len(text) > 1200:
-            return text[:1200] + "...(truncated)"
-        return text
+
+        if len(text) <= OrchestratorService._SUMMARY_LIMIT:
+            return text
+
+        # Always preserve the nextPageToken even after truncation so the planner
+        # can use it for cursor-based pagination.
+        # Only append if the token falls beyond the truncation boundary; if it's
+        # at the beginning (or anywhere within the limit) it is already included.
+        marker = OrchestratorService._NEXT_PAGE_TOKEN_MARKER
+        token_idx = text.find(marker)
+        token_suffix = ""
+        if token_idx != -1:
+            line_end = text.find("\n", token_idx)
+            token_line = text[token_idx:] if line_end == -1 else text[token_idx:line_end]
+            # Append the full token line only when it isn't already fully contained
+            # within the truncated portion (covers: token at end, and the edge case
+            # where it starts just before the boundary but extends beyond it).
+            if token_idx + len(token_line) > OrchestratorService._SUMMARY_LIMIT:
+                token_suffix = f"\n{token_line}"
+
+        return text[: OrchestratorService._SUMMARY_LIMIT] + "...(truncated)" + token_suffix
 
     @staticmethod
     def _stable_json(value: Any) -> str:

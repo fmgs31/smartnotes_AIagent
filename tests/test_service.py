@@ -180,22 +180,92 @@ class TestEnsureToolsDiscovered:
 
 # ── Static helpers ────────────────────────────────────────────────────────────
 
+def _make_call_result(*texts: str):
+    """Minimal CallToolResult-like object with TextContent items."""
+    parts = [SimpleNamespace(text=t) for t in texts]
+    return SimpleNamespace(content=parts)
+
+
+LIMIT = OrchestratorService._SUMMARY_LIMIT
+MARKER = OrchestratorService._NEXT_PAGE_TOKEN_MARKER
+
+
 class TestSummarizeMcpResult:
-    def test_short_string_unchanged(self):
-        assert OrchestratorService._summarize_mcp_result("hello") == "hello"
+    # ── basic cases ────────────────────────────────────────────────────────────
 
-    def test_long_string_truncated_with_suffix(self):
-        result = OrchestratorService._summarize_mcp_result("x" * 2000)
-        assert result.endswith("...(truncated)")
-        assert len(result) < 2000
-
-    def test_none_returns_empty_string(self):
+    def test_none_returns_empty(self):
         assert OrchestratorService._summarize_mcp_result(None) == ""
 
-    def test_non_string_is_converted(self):
+    def test_short_string_returned_unchanged(self):
+        assert OrchestratorService._summarize_mcp_result("hello") == "hello"
+
+    def test_string_exactly_at_limit_returned_unchanged(self):
+        text = "x" * LIMIT
+        assert OrchestratorService._summarize_mcp_result(text) == text
+
+    def test_long_string_truncated(self):
+        text = "x" * (LIMIT + 100)
+        result = OrchestratorService._summarize_mcp_result(text)
+        assert result == "x" * LIMIT + "...(truncated)"
+
+    def test_non_string_is_converted_via_str(self):
         result = OrchestratorService._summarize_mcp_result({"key": "val"})
         assert isinstance(result, str)
         assert "key" in result
+
+    # ── CallToolResult extraction ──────────────────────────────────────────────
+
+    def test_calltoolresult_text_is_extracted(self):
+        obj = _make_call_result("item 1\nitem 2")
+        assert OrchestratorService._summarize_mcp_result(obj) == "item 1\nitem 2"
+
+    def test_calltoolresult_multiple_parts_are_joined(self):
+        obj = _make_call_result("part A", "part B")
+        assert OrchestratorService._summarize_mcp_result(obj) == "part A\npart B"
+
+    def test_calltoolresult_empty_content_falls_back_to_str(self):
+        obj = SimpleNamespace(content=[])
+        result = OrchestratorService._summarize_mcp_result(obj)
+        assert isinstance(result, str)
+
+    # ── nextPageToken preservation ─────────────────────────────────────────────
+
+    def test_token_at_end_appended_after_truncation(self):
+        # Token is beyond the limit — must be preserved.
+        token_line = MARKER + "~!!~MYTOKEN"
+        text = "a" * (LIMIT + 100) + "\n" + token_line
+        result = OrchestratorService._summarize_mcp_result(text)
+        assert result.endswith("...(truncated)\n" + token_line)
+
+    def test_token_at_beginning_already_included_no_duplicate(self):
+        # Token is within the first LIMIT chars — no need to append.
+        token_line = MARKER + "~!!~MYTOKEN"
+        text = token_line + "\n" + "a" * (LIMIT + 100)
+        result = OrchestratorService._summarize_mcp_result(text)
+        assert token_line in result[:LIMIT]
+        assert result.count(token_line) == 1  # not duplicated
+
+    def test_token_near_boundary_full_line_appended(self):
+        # Token starts just inside the limit but the value extends beyond it.
+        long_token = "~!!~" + "T" * 200
+        token_line = MARKER + long_token
+        # Place the marker so it begins 10 chars before the limit.
+        padding = "a" * (LIMIT - len(MARKER) - 10)
+        text = padding + token_line + "\nextra stuff"
+        result = OrchestratorService._summarize_mcp_result(text)
+        assert result.endswith("...(truncated)\n" + token_line)
+
+    def test_no_token_no_suffix(self):
+        text = "a" * (LIMIT + 100)
+        result = OrchestratorService._summarize_mcp_result(text)
+        assert result == "a" * LIMIT + "...(truncated)"
+
+    def test_calltoolresult_long_text_token_at_end_preserved(self):
+        token_line = MARKER + "~!!~BIGTOKEN"
+        long_text = "item\n" * 1100 + token_line  # >5000 chars
+        obj = _make_call_result(long_text)
+        result = OrchestratorService._summarize_mcp_result(obj)
+        assert result.endswith("...(truncated)\n" + token_line)
 
 
 class TestExtractToolsWithSchema:
