@@ -1,15 +1,25 @@
-﻿import asyncio
+import asyncio
 import json
 import logging
 from contextlib import AsyncExitStack
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.llm_router import plan_next_step
 from app.mcp_client import MCPClient
 from app.schemas import ExecutedToolStep, NextStepPlan, ToolCallPlan
 from app.server_registry import ServerConfig, ServerRegistry
+from app.utils import stable_json
 
 log = logging.getLogger("agent")
+
+
+@dataclass
+class _RequestContext:
+    stack: AsyncExitStack
+    token: str
+    text: str
+    clients: dict[str, MCPClient] = field(default_factory=dict)
 
 
 class Agent:
@@ -29,23 +39,13 @@ class Agent:
         self._discovery_lock = asyncio.Lock()
 
     async def handle_text(self, *, text: str, token: str):
-        async with AsyncExitStack() as session_stack:
-            server_clients: dict[str, MCPClient] = {}
-
-            async def _get_or_open_client(server: ServerConfig) -> MCPClient:
-                existing = server_clients.get(server.id)
-                if existing is not None:
-                    return existing
-
-                mcp_client = MCPClient(server_url=server.url)
-                await session_stack.enter_async_context(mcp_client.session(token=token))
-                server_clients[server.id] = mcp_client
-                return mcp_client
+        async with AsyncExitStack() as stack:
+            ctx = _RequestContext(stack=stack, token=token, text=text)
 
             if not self._tool_id_to_tool:
                 for server in self.registry.all():
-                    await _get_or_open_client(server)
-                await self._ensure_tools_discovered(token, preopened_clients=server_clients)
+                    await self._get_or_open_client(server, ctx)
+                await self._ensure_tools_discovered(ctx)
 
             allowed_tools = list(self._tool_id_to_tool.keys())
             tool_schemas = {tool_id: self._tool_id_to_schema.get(tool_id) for tool_id in allowed_tools}
@@ -55,71 +55,24 @@ class Agent:
             seen_signatures: set[tuple[str, str]] = set()
 
             for step_idx in range(1, self.max_plan_steps + 1):
-                next_step: NextStepPlan = await plan_next_step(
-                    model=self.model,
-                    text=text,
+                executed = await self._run_step(
+                    step_idx=step_idx,
+                    ctx=ctx,
                     allowed_tools=allowed_tools,
                     tool_schemas=tool_schemas,
-                    executed_steps=planning_context,
-                    remaining_steps=self.max_plan_steps - step_idx + 1,
+                    planning_context=planning_context,
+                    seen_signatures=seen_signatures,
                 )
-
-                if next_step.done:
+                if executed is None:
                     break
-
-                tool_plan = ToolCallPlan(
-                    tool_name=next_step.tool_name,
-                    arguments=next_step.arguments or {},
-                )
-                selected = self._tool_id_to_tool.get(tool_plan.tool_name)
-                if selected is None:
-                    raise ValueError(f"Planned tool '{tool_plan.tool_name}' is not available")
-                server, real_tool_name = selected
-
-                signature = (tool_plan.tool_name, self._stable_json(tool_plan.arguments))
-                if signature in seen_signatures:
-                    raise ValueError(
-                        f"Planner loop detected: repeated step '{tool_plan.tool_name}' with identical arguments"
-                    )
-                seen_signatures.add(signature)
-
-                log.info(
-                    "Step=%s Server=%s ToolId=%s Tool=%s",
-                    step_idx,
-                    server.id,
-                    tool_plan.tool_name,
-                    real_tool_name,
-                )
-                if next_step.explanation:
-                    log.info("Planner rationale: %s", next_step.explanation)
-
-                mcp_client = await _get_or_open_client(server)
-                result = await mcp_client.call_tool(
-                    token=token,
-                    tool_name=real_tool_name,
-                    arguments=tool_plan.arguments,
-                )
-                result_type, result_len = self._result_metrics(result)
-                log.debug(f"\n -------------\nMCP SERVER RESULT: {result}\n")
-                log.info(f"Step={step_idx} result_type={result_type} result_len={result_len}")
-
-                steps.append(
-                    ExecutedToolStep(
-                        step=step_idx,
-                        server_id=server.id,
-                        tool_call=tool_plan,
-                        mcp_result=result,
-                    )
-                )
-                planning_context.append(
-                    {
-                        "step": step_idx,
-                        "server_id": server.id,
-                        "tool_name": tool_plan.tool_name,
-                        "arguments": tool_plan.arguments,
-                        "result_summary": self._summarize_mcp_result(result),
-                    }
-                )
+                steps.append(executed)
+                planning_context.append({
+                    "step": step_idx,
+                    "server_id": executed.server_id,
+                    "tool_name": executed.tool_call.tool_name,
+                    "arguments": executed.tool_call.arguments,
+                    "result_summary": self._summarize_mcp_result(executed.mcp_result),
+                })
 
             if not steps:
                 raise ValueError("Planner did not produce any executable step for this request")
@@ -127,11 +80,79 @@ class Agent:
             last_step = steps[-1]
             return last_step.server_id, last_step.tool_call, last_step.mcp_result, steps
 
-    async def _ensure_tools_discovered(
+    async def _get_or_open_client(self, server: ServerConfig, ctx: _RequestContext) -> MCPClient:
+        existing = ctx.clients.get(server.id)
+        if existing is not None:
+            return existing
+        mcp_client = MCPClient(server_url=server.url)
+        await ctx.stack.enter_async_context(mcp_client.session(token=ctx.token))
+        ctx.clients[server.id] = mcp_client
+        return mcp_client
+
+    async def _run_step(
         self,
-        token: str,
-        preopened_clients: dict[str, MCPClient],
-    ) -> None:
+        *,
+        step_idx: int,
+        ctx: _RequestContext,
+        allowed_tools: list[str],
+        tool_schemas: dict[str, Any],
+        planning_context: list[dict[str, Any]],
+        seen_signatures: set[tuple[str, str]],
+    ) -> ExecutedToolStep | None:
+        """Execute one planning step. Returns None when the planner signals done."""
+        next_step: NextStepPlan = await plan_next_step(
+            model=self.model,
+            text=ctx.text,
+            allowed_tools=allowed_tools,
+            tool_schemas=tool_schemas,
+            executed_steps=planning_context,
+            remaining_steps=self.max_plan_steps - step_idx + 1,
+        )
+
+        if next_step.done:
+            return None
+
+        tool_plan = ToolCallPlan(
+            tool_name=next_step.tool_name,
+            arguments=next_step.arguments or {},
+        )
+        selected = self._tool_id_to_tool.get(tool_plan.tool_name)
+        if selected is None:
+            raise ValueError(f"Planned tool '{tool_plan.tool_name}' is not available")
+        server, real_tool_name = selected
+
+        signature = (tool_plan.tool_name, stable_json(tool_plan.arguments))
+        if signature in seen_signatures:
+            raise ValueError(
+                f"Planner loop detected: repeated step '{tool_plan.tool_name}' with identical arguments"
+            )
+        seen_signatures.add(signature)
+
+        log.info(
+            "Step=%s Server=%s ToolId=%s Tool=%s",
+            step_idx, server.id, tool_plan.tool_name, real_tool_name,
+        )
+        if next_step.explanation:
+            log.info("Planner rationale: %s", next_step.explanation)
+
+        mcp_client = await self._get_or_open_client(server, ctx)
+        result = await mcp_client.call_tool(
+            token=ctx.token,
+            tool_name=real_tool_name,
+            arguments=tool_plan.arguments,
+        )
+        result_type, result_len = self._result_metrics(result)
+        log.debug(f"\n -------------\nMCP SERVER RESULT: {result}\n")
+        log.info(f"Step={step_idx} result_type={result_type} result_len={result_len}")
+
+        return ExecutedToolStep(
+            step=step_idx,
+            server_id=server.id,
+            tool_call=tool_plan,
+            mcp_result=result,
+        )
+
+    async def _ensure_tools_discovered(self, ctx: _RequestContext) -> None:
         if self._tool_id_to_tool:
             return
 
@@ -143,8 +164,8 @@ class Agent:
             tool_id_to_schema: dict[str, Any] = {}
 
             for server in self.registry.all():
-                mcp_client = preopened_clients[server.id]
-                raw_tools = await mcp_client.list_tools(token=token)
+                mcp_client = ctx.clients[server.id]
+                raw_tools = await mcp_client.list_tools(token=ctx.token)
 
                 tools_with_schema = self._extract_tools_with_schema(raw_tools)
                 discovered_tools = list(tools_with_schema.keys())
@@ -155,7 +176,6 @@ class Agent:
                     for tool_name in discovered_tools
                     if configured_allowed is None or tool_name in configured_allowed
                 ]
-
 
                 for tool_name in effective_tools:
                     tool_id = self._build_tool_id(server.id, tool_name)
@@ -204,7 +224,7 @@ class Agent:
 
         return tools
 
-    _NEXT_PAGE_TOKEN_MARKER = "nextPageToken: "
+    # _NEXT_PAGE_TOKEN_MARKER = "nextPageToken: "
     _SUMMARY_LIMIT = 5000
 
     @staticmethod
@@ -228,30 +248,25 @@ class Agent:
         if len(text) <= Agent._SUMMARY_LIMIT:
             return text
 
-        # Always preserve the nextPageToken even after truncation so the planner
-        # can use it for cursor-based pagination.
-        # Only append if the token falls beyond the truncation boundary; if it's
-        # at the beginning (or anywhere within the limit) it is already included.
-        marker = Agent._NEXT_PAGE_TOKEN_MARKER
-        token_idx = text.find(marker)
-        token_suffix = ""
-        if token_idx != -1:
-            line_end = text.find("\n", token_idx)
-            token_line = text[token_idx:] if line_end == -1 else text[token_idx:line_end]
-            # Append the full token line only when it isn't already fully contained
-            # within the truncated portion (covers: token at end, and the edge case
-            # where it starts just before the boundary but extends beyond it).
-            if token_idx + len(token_line) > Agent._SUMMARY_LIMIT:
-                token_suffix = f"\n{token_line}"
+        # # Always preserve the nextPageToken even after truncation so the planner
+        # # can use it for cursor-based pagination.
+        # # Only append if the token falls beyond the truncation boundary; if it's
+        # # at the beginning (or anywhere within the limit) it is already included.
+        # marker = Agent._NEXT_PAGE_TOKEN_MARKER
+        # token_idx = text.find(marker)
+        # token_suffix = ""
+        # if token_idx != -1:
+        #     line_end = text.find("\n", token_idx)
+        #     token_line = text[token_idx:] if line_end == -1 else text[token_idx:line_end]
+        #     # Append the full token line only when it isn't already fully contained
+        #     # within the truncated portion (covers: token at end, and the edge case
+        #     # where it starts just before the boundary but extends beyond it).
+        #     if token_idx + len(token_line) > Agent._SUMMARY_LIMIT:
+        #         token_suffix = f"\n{token_line}"
 
-        return text[: Agent._SUMMARY_LIMIT] + "...(truncated)" + token_suffix
+        # return text[: Agent._SUMMARY_LIMIT] + "...(truncated)" + token_suffix
 
-    @staticmethod
-    def _stable_json(value: Any) -> str:
-        try:
-            return json.dumps(value, sort_keys=True, ensure_ascii=False)
-        except Exception:
-            return str(value)
+        return text[: Agent._SUMMARY_LIMIT] + "...(truncated)"
 
     @staticmethod
     def _result_metrics(result: Any) -> tuple[str, int]:
