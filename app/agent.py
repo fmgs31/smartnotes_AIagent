@@ -151,14 +151,22 @@ class Agent:
             log.info("Planner rationale: %s", next_step.explanation)
 
         mcp_client = await self._get_or_open_client(server, request_ctxt)
-        result = await mcp_client.call_tool(
-            token=request_ctxt.token,
-            tool_name=real_tool_name,
-            arguments=tool_plan.arguments,
-        )
+        try:
+            result = await mcp_client.call_tool(
+                token=request_ctxt.token,
+                tool_name=real_tool_name,
+                arguments=tool_plan.arguments,
+            )
+        except Exception as exc:
+            # Tool call failed (bad arguments, upstream error, etc.).
+            # Feed the error back to the planner as the step result so it can adapt
+            # rather than surfacing this as an unhandled 503/500 to the caller.
+            log.warning("Step=%s tool call failed: %s", step_idx, exc)
+            result = f"[Tool error] {exc}"
         result_type, result_len = self._result_metrics(result)
-        log.debug(f"\n -------------\nMCP SERVER RESULT: {result}\n")
+        log.debug(f"\n -------------\nMCP SERVER RESULT: {result}\n -------------")
         log.info(f"Step={step_idx} result_type={result_type} result_len={result_len}")
+        log.info("\n")
 
         return ExecutedToolStep(
             step=step_idx,
