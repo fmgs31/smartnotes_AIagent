@@ -17,9 +17,11 @@ def _make_registry(*server_ids: str):
     return registry, servers
 
 
-def _make_agent(*server_ids: str):
+def _make_agent(*server_ids: str, planner=None):
     registry, servers = _make_registry(*server_ids or ("test-server",))
-    svc = Agent(registry=registry, model="test-model", max_plan_steps=5)
+    if planner is None:
+        planner = AsyncMock()
+    svc = Agent(registry=registry, planner=planner, max_plan_steps=5)
     return svc, servers
 
 
@@ -45,16 +47,16 @@ def _tool(name: str):
 
 class TestHandleText:
     @patch("app.agent.MCPClient")
-    @patch("app.agent.plan_next_step")
-    async def test_single_step_returns_result(self, mock_plan, mock_mcp_cls):
-        svc, servers = _make_agent()
+    async def test_single_step_returns_result(self, mock_mcp_cls):
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
         server = servers[0]
         mock_mcp_cls.return_value = _mcp_mock(call_result="3 documents found")
 
         svc._tool_id_to_tool = {"test-server.search": (server, "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
 
-        mock_plan.side_effect = [
+        mock_plan.plan_next_step.side_effect = [
             NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "test"}),
             NextStepPlan(done=True, tool_name=""),
         ]
@@ -67,9 +69,9 @@ class TestHandleText:
         assert len(steps) == 1
 
     @patch("app.agent.MCPClient")
-    @patch("app.agent.plan_next_step")
-    async def test_multi_step_returns_last_result(self, mock_plan, mock_mcp_cls):
-        svc, servers = _make_agent()
+    async def test_multi_step_returns_last_result(self, mock_mcp_cls):
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
         server = servers[0]
         mock_mcp_cls.return_value = _mcp_mock(call_result="second result")
 
@@ -79,7 +81,7 @@ class TestHandleText:
         }
         svc._tool_id_to_schema = {"test-server.search": {}, "test-server.create": {}}
 
-        mock_plan.side_effect = [
+        mock_plan.plan_next_step.side_effect = [
             NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "a"}),
             NextStepPlan(done=False, tool_name="test-server.create", arguments={"title": "b"}),
             NextStepPlan(done=True, tool_name=""),
@@ -91,37 +93,37 @@ class TestHandleText:
         assert result == "second result"
 
     @patch("app.agent.MCPClient")
-    @patch("app.agent.plan_next_step")
-    async def test_planner_immediately_done_raises(self, mock_plan, mock_mcp_cls):
-        svc, servers = _make_agent()
+    async def test_planner_immediately_done_raises(self, mock_mcp_cls):
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
-        mock_plan.return_value = NextStepPlan(done=True, tool_name="")
+        mock_plan.plan_next_step.return_value = NextStepPlan(done=True, tool_name="")
         mock_mcp_cls.return_value = _mcp_mock()
 
         with pytest.raises(ValueError, match="did not produce"):
             await svc.handle_text(text="do something", token="tok")
 
     @patch("app.agent.MCPClient")
-    @patch("app.agent.plan_next_step")
-    async def test_loop_detection_raises(self, mock_plan, mock_mcp_cls):
-        svc, servers = _make_agent()
+    async def test_loop_detection_raises(self, mock_mcp_cls):
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
         same = NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "x"})
-        mock_plan.side_effect = [same, same]
+        mock_plan.plan_next_step.side_effect = [same, same]
         mock_mcp_cls.return_value = _mcp_mock()
 
         with pytest.raises(ValueError, match="loop detected"):
             await svc.handle_text(text="loop me", token="tok")
 
     @patch("app.agent.MCPClient")
-    @patch("app.agent.plan_next_step")
-    async def test_unknown_tool_name_raises(self, mock_plan, mock_mcp_cls):
-        svc, servers = _make_agent()
+    async def test_unknown_tool_name_raises(self, mock_mcp_cls):
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
-        mock_plan.return_value = NextStepPlan(
+        mock_plan.plan_next_step.return_value = NextStepPlan(
             done=False, tool_name="test-server.nonexistent", arguments={}
         )
         mock_mcp_cls.return_value = _mcp_mock()
@@ -168,7 +170,7 @@ class TestEnsureToolsDiscovered:
         server = ServerConfig(id="s", url="http://s/mcp/", allowed_tools=["search"])
         registry = MagicMock(spec=ServerRegistry)
         registry.all.return_value = [server]
-        svc = Agent(registry=registry, model="m", max_plan_steps=5)
+        svc = Agent(registry=registry, planner=AsyncMock(), max_plan_steps=5)
         mock_client = _mcp_mock(tools=[_tool("search"), _tool("create")])  # create should be filtered out
 
         await svc._ensure_tools_discovered(_make_request_ctxt({"s": mock_client}))

@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import HTTPException
 
-from app.auth import require_api_key, require_authorized_user
+from app.auth import Auth
 
 
 def _mock_http_client(status: int, body: dict):
@@ -19,36 +19,38 @@ def _mock_http_client(status: int, body: dict):
 
 
 class TestRequireApiKey:
+    def setup_method(self):
+        self.auth = Auth(api_key="test-app-api-key", allowed_emails=set())
+
     def test_correct_key_passes(self):
         # Should not raise
-        require_api_key("test-app-api-key")
+        self.auth.require_api_key("test-app-api-key")
 
     def test_wrong_key_raises_401(self):
         with pytest.raises(HTTPException) as exc:
-            require_api_key("wrong-key")
+            self.auth.require_api_key("wrong-key")
         assert exc.value.status_code == 401
 
     def test_none_key_raises_401(self):
         with pytest.raises(HTTPException) as exc:
-            require_api_key(None)
+            self.auth.require_api_key(None)
         assert exc.value.status_code == 401
 
 
 class TestRequireAuthorizedUser:
-    @pytest.fixture(autouse=True)
-    def patch_allowed_emails(self, monkeypatch):
-        monkeypatch.setattr("app.auth._allowed_emails", {"allowed@example.com"})
+    def setup_method(self):
+        self.auth = Auth(api_key="", allowed_emails={"allowed@example.com"})
 
     async def test_valid_token_allowed_email_returns_email(self):
         mock_http = _mock_http_client(200, {"email": "allowed@example.com"})
         with patch("app.auth.httpx.AsyncClient", return_value=mock_http):
-            result = await require_authorized_user("ya29.valid")
+            result = await self.auth.require_authorized_user("ya29.valid")
         assert result == "allowed@example.com"
 
     async def test_email_comparison_is_case_insensitive(self):
         mock_http = _mock_http_client(200, {"email": "ALLOWED@EXAMPLE.COM"})
         with patch("app.auth.httpx.AsyncClient", return_value=mock_http):
-            result = await require_authorized_user("ya29.valid")
+            result = await self.auth.require_authorized_user("ya29.valid")
         assert result == "allowed@example.com"
 
     async def test_invalid_token_google_returns_400_raises_401(self):
@@ -57,7 +59,7 @@ class TestRequireAuthorizedUser:
         )
         with patch("app.auth.httpx.AsyncClient", return_value=mock_http):
             with pytest.raises(HTTPException) as exc:
-                await require_authorized_user("expired-token")
+                await self.auth.require_authorized_user("expired-token")
         assert exc.value.status_code == 401
         assert "Token has expired" in exc.value.detail
 
@@ -65,14 +67,14 @@ class TestRequireAuthorizedUser:
         mock_http = _mock_http_client(401, {"error": "unauthorized"})
         with patch("app.auth.httpx.AsyncClient", return_value=mock_http):
             with pytest.raises(HTTPException) as exc:
-                await require_authorized_user("bad-token")
+                await self.auth.require_authorized_user("bad-token")
         assert exc.value.status_code == 401
 
     async def test_valid_token_email_not_in_allowlist_raises_403(self):
         mock_http = _mock_http_client(200, {"email": "stranger@example.com"})
         with patch("app.auth.httpx.AsyncClient", return_value=mock_http):
             with pytest.raises(HTTPException) as exc:
-                await require_authorized_user("ya29.valid")
+                await self.auth.require_authorized_user("ya29.valid")
         assert exc.value.status_code == 403
         assert "stranger@example.com" in exc.value.detail
 
@@ -80,6 +82,6 @@ class TestRequireAuthorizedUser:
         mock_http = _mock_http_client(200, {"sub": "12345"})  # no email field
         with patch("app.auth.httpx.AsyncClient", return_value=mock_http):
             with pytest.raises(HTTPException) as exc:
-                await require_authorized_user("ya29.valid")
+                await self.auth.require_authorized_user("ya29.valid")
         assert exc.value.status_code == 401
         assert "email" in exc.value.detail

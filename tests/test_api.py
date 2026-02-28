@@ -42,7 +42,7 @@ class TestHealth:
 # ── /run ──────────────────────────────────────────────────────────────────────
 
 class TestRunEndpoint:
-    @patch("app.main.require_authorized_user", new_callable=AsyncMock)
+    @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
     @patch("app.main.svc")
     async def test_valid_request_returns_200(self, mock_svc, mock_auth, client):
         mock_auth.return_value = "allowed@example.com"
@@ -78,7 +78,7 @@ class TestRunEndpoint:
             )
         assert resp.status_code == 401
 
-    @patch("app.main.require_authorized_user", new_callable=AsyncMock)
+    @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
     async def test_unauthorized_user_returns_403(self, mock_auth, client):
         mock_auth.side_effect = HTTPException(status_code=403, detail="Not in allowlist")
 
@@ -90,7 +90,7 @@ class TestRunEndpoint:
             )
         assert resp.status_code == 403
 
-    @patch("app.main.require_authorized_user", new_callable=AsyncMock)
+    @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
     async def test_expired_token_returns_401(self, mock_auth, client):
         mock_auth.side_effect = HTTPException(
             status_code=401, detail="Invalid or expired GCP token"
@@ -104,7 +104,7 @@ class TestRunEndpoint:
             )
         assert resp.status_code == 401
 
-    @patch("app.main.require_authorized_user", new_callable=AsyncMock)
+    @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
     @patch("app.main.svc")
     async def test_service_value_error_returns_400(self, mock_svc, mock_auth, client):
         mock_auth.return_value = "allowed@example.com"
@@ -118,7 +118,7 @@ class TestRunEndpoint:
             )
         assert resp.status_code == 400
 
-    @patch("app.main.require_authorized_user", new_callable=AsyncMock)
+    @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
     @patch("app.main.svc")
     async def test_service_runtime_error_returns_500(self, mock_svc, mock_auth, client):
         mock_auth.return_value = "allowed@example.com"
@@ -154,7 +154,7 @@ class TestRunEndpoint:
 # ── /run-audio ────────────────────────────────────────────────────────────────
 
 class TestRunAudioEndpoint:
-    @patch("app.main.require_authorized_user", new_callable=AsyncMock)
+    @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
     @patch("app.main.svc")
     @patch("app.main.openai_client")
     async def test_valid_audio_transcribed_and_processed(
@@ -188,7 +188,7 @@ class TestRunAudioEndpoint:
             )
         assert resp.status_code == 401
 
-    @patch("app.main.require_authorized_user", new_callable=AsyncMock)
+    @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
     async def test_empty_audio_file_returns_400(self, mock_auth, client):
         mock_auth.return_value = "allowed@example.com"
 
@@ -201,7 +201,7 @@ class TestRunAudioEndpoint:
             )
         assert resp.status_code == 400
 
-    @patch("app.main.require_authorized_user", new_callable=AsyncMock)
+    @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
     @patch("app.main.openai_client")
     async def test_empty_transcription_returns_400(self, mock_openai, mock_auth, client):
         mock_auth.return_value = "allowed@example.com"
@@ -218,7 +218,7 @@ class TestRunAudioEndpoint:
             )
         assert resp.status_code == 400
 
-    @patch("app.main.require_authorized_user", new_callable=AsyncMock)
+    @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
     @patch("app.main.openai_client")
     async def test_transcription_failure_returns_500(self, mock_openai, mock_auth, client):
         mock_auth.return_value = "allowed@example.com"

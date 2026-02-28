@@ -5,7 +5,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.llm_router import plan_next_step
+from app.llm_router import Planner
 from app.mcp_client import MCPClient
 from app.schemas import ExecutedToolStep, NextStepPlan, ToolCallPlan
 from app.server_registry import ServerConfig, ServerRegistry
@@ -37,11 +37,11 @@ class Agent:
     def __init__(
         self,
         registry: ServerRegistry,
-        model: str,
+        planner: Planner,
         max_plan_steps: int,
     ):
         self.registry = registry
-        self.model = model
+        self._planner = planner
         self.max_plan_steps = max_plan_steps
         # Maps fully-qualified tool id -> (server_config, real_tool_name)
         self._tool_id_to_tool: dict[str, tuple[ServerConfig, str]] = {}
@@ -116,8 +116,7 @@ class Agent:
         the chosen tool, invokes it via MCP, and returns the result.
         Returns None when the planner signals it is done.
         """
-        next_step: NextStepPlan = await plan_next_step(
-            model=self.model,
+        next_step: NextStepPlan = await self._planner.plan_next_step(
             text=request_ctxt.text,
             allowed_tools=request_ctxt.allowed_tools,
             tool_schemas=request_ctxt.tool_schemas,
