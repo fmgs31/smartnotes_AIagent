@@ -28,6 +28,7 @@ class _RequestContext:
         tool_id_to_tool: dict[str, tuple],
         tool_id_to_schema: dict[str, Any],
     ) -> None:
+        """Populate allowed_tools and tool_schemas from the agent's discovered tool cache."""
         self.allowed_tools = list(tool_id_to_tool.keys())
         self.tool_schemas = {tool_id: tool_id_to_schema.get(tool_id) for tool_id in self.allowed_tools}
 
@@ -49,6 +50,11 @@ class Agent:
         self._discovery_lock = asyncio.Lock()
 
     async def handle_text(self, *, text: str, token: str):
+        """
+        Main entry point. Runs the planner loop for the given user text and returns
+        the server id, tool call, MCP result, and full list of executed steps.
+        Opens MCP sessions for the duration of the request via AsyncExitStack.
+        """
         async with AsyncExitStack() as stack:
             
             request_ctxt = _RequestContext(stack=stack, token=token, text=text)
@@ -89,6 +95,7 @@ class Agent:
             return last_step.server_id, last_step.tool_call, last_step.mcp_result, steps
 
     async def _get_or_open_client(self, server: ServerConfig, request_ctxt: _RequestContext) -> MCPClient:
+        """Return the already-open client for this server, or open a new one and register it with the request stack."""
         existing = request_ctxt.clients.get(server.id)
         if existing is not None:
             return existing
@@ -99,13 +106,16 @@ class Agent:
 
     async def _run_step(
         self,
-        *,
         step_idx: int,
         request_ctxt: _RequestContext,
         planning_context: list[dict[str, Any]],
         seen_signatures: set[tuple[str, str]],
     ) -> ExecutedToolStep | None:
-        """Execute one planning step. Returns None when the planner signals done."""
+        """
+        Execute one planning step. Calls the LLM planner, validates and deduplicates
+        the chosen tool, invokes it via MCP, and returns the result.
+        Returns None when the planner signals it is done.
+        """
         next_step: NextStepPlan = await plan_next_step(
             model=self.model,
             text=request_ctxt.text,
@@ -159,6 +169,11 @@ class Agent:
         )
 
     async def _ensure_tools_discovered(self, request_ctxt: _RequestContext) -> None:
+        """
+        Query each registered MCP server for its tool list and populate the agent-level
+        tool cache. Uses double-checked locking so only the first concurrent caller does
+        the work; subsequent callers return immediately once the cache is filled.
+        """
         if self._tool_id_to_tool:
             return
 
@@ -198,10 +213,15 @@ class Agent:
 
     @staticmethod
     def _build_tool_id(server_id: str, tool_name: str) -> str:
+        """Build the fully-qualified tool id used as the unique key across all servers."""
         return f"{server_id}.{tool_name}"
 
     @staticmethod
     def _extract_tools_with_schema(raw_tools: Any) -> dict[str, Any]:
+        """
+        Normalize the raw tool list returned by list_tools (dict, list, or object)
+        into a mapping of tool name -> input schema.
+        """
         if raw_tools is None:
             return {}
 
@@ -235,6 +255,10 @@ class Agent:
 
     @staticmethod
     def _summarize_mcp_result(result: Any) -> str:
+        """
+        Flatten an MCP CallToolResult to a plain string for inclusion in the planner
+        context. Truncates to _SUMMARY_LIMIT characters to keep prompts bounded.
+        """
         if result is None:
             return ""
 
@@ -276,6 +300,7 @@ class Agent:
 
     @staticmethod
     def _result_metrics(result: Any) -> tuple[str, int]:
+        """Return (type name, byte length) of an MCP result for logging purposes."""
         result_type = type(result).__name__
         try:
             if isinstance(result, (str, bytes, bytearray)):
