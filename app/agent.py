@@ -20,6 +20,16 @@ class _RequestContext:
     token: str
     text: str
     clients: dict[str, MCPClient] = field(default_factory=dict)
+    allowed_tools: list[str] = field(default_factory=list)
+    tool_schemas: dict[str, Any] = field(default_factory=dict)
+
+    def load_tools(
+        self,
+        tool_id_to_tool: dict[str, tuple],
+        tool_id_to_schema: dict[str, Any],
+    ) -> None:
+        self.allowed_tools = list(tool_id_to_tool.keys())
+        self.tool_schemas = {tool_id: tool_id_to_schema.get(tool_id) for tool_id in self.allowed_tools}
 
 
 class Agent:
@@ -40,15 +50,15 @@ class Agent:
 
     async def handle_text(self, *, text: str, token: str):
         async with AsyncExitStack() as stack:
-            ctx = _RequestContext(stack=stack, token=token, text=text)
+            
+            request_ctxt = _RequestContext(stack=stack, token=token, text=text)
 
             if not self._tool_id_to_tool:
                 for server in self.registry.all():
-                    await self._get_or_open_client(server, ctx)
-                await self._ensure_tools_discovered(ctx)
+                    await self._get_or_open_client(server, request_ctxt)
+                await self._ensure_tools_discovered(request_ctxt)
 
-            allowed_tools = list(self._tool_id_to_tool.keys())
-            tool_schemas = {tool_id: self._tool_id_to_schema.get(tool_id) for tool_id in allowed_tools}
+            request_ctxt.load_tools(self._tool_id_to_tool, self._tool_id_to_schema)
 
             steps: list[ExecutedToolStep] = []
             planning_context: list[dict[str, Any]] = []
@@ -57,9 +67,7 @@ class Agent:
             for step_idx in range(1, self.max_plan_steps + 1):
                 executed = await self._run_step(
                     step_idx=step_idx,
-                    ctx=ctx,
-                    allowed_tools=allowed_tools,
-                    tool_schemas=tool_schemas,
+                    request_ctxt=request_ctxt,
                     planning_context=planning_context,
                     seen_signatures=seen_signatures,
                 )
@@ -80,31 +88,29 @@ class Agent:
             last_step = steps[-1]
             return last_step.server_id, last_step.tool_call, last_step.mcp_result, steps
 
-    async def _get_or_open_client(self, server: ServerConfig, ctx: _RequestContext) -> MCPClient:
-        existing = ctx.clients.get(server.id)
+    async def _get_or_open_client(self, server: ServerConfig, request_ctxt: _RequestContext) -> MCPClient:
+        existing = request_ctxt.clients.get(server.id)
         if existing is not None:
             return existing
         mcp_client = MCPClient(server_url=server.url)
-        await ctx.stack.enter_async_context(mcp_client.session(token=ctx.token))
-        ctx.clients[server.id] = mcp_client
+        await request_ctxt.stack.enter_async_context(mcp_client.session(token=request_ctxt.token))
+        request_ctxt.clients[server.id] = mcp_client
         return mcp_client
 
     async def _run_step(
         self,
         *,
         step_idx: int,
-        ctx: _RequestContext,
-        allowed_tools: list[str],
-        tool_schemas: dict[str, Any],
+        request_ctxt: _RequestContext,
         planning_context: list[dict[str, Any]],
         seen_signatures: set[tuple[str, str]],
     ) -> ExecutedToolStep | None:
         """Execute one planning step. Returns None when the planner signals done."""
         next_step: NextStepPlan = await plan_next_step(
             model=self.model,
-            text=ctx.text,
-            allowed_tools=allowed_tools,
-            tool_schemas=tool_schemas,
+            text=request_ctxt.text,
+            allowed_tools=request_ctxt.allowed_tools,
+            tool_schemas=request_ctxt.tool_schemas,
             executed_steps=planning_context,
             remaining_steps=self.max_plan_steps - step_idx + 1,
         )
@@ -135,9 +141,9 @@ class Agent:
         if next_step.explanation:
             log.info("Planner rationale: %s", next_step.explanation)
 
-        mcp_client = await self._get_or_open_client(server, ctx)
+        mcp_client = await self._get_or_open_client(server, request_ctxt)
         result = await mcp_client.call_tool(
-            token=ctx.token,
+            token=request_ctxt.token,
             tool_name=real_tool_name,
             arguments=tool_plan.arguments,
         )
@@ -152,7 +158,7 @@ class Agent:
             mcp_result=result,
         )
 
-    async def _ensure_tools_discovered(self, ctx: _RequestContext) -> None:
+    async def _ensure_tools_discovered(self, request_ctxt: _RequestContext) -> None:
         if self._tool_id_to_tool:
             return
 
@@ -164,8 +170,8 @@ class Agent:
             tool_id_to_schema: dict[str, Any] = {}
 
             for server in self.registry.all():
-                mcp_client = ctx.clients[server.id]
-                raw_tools = await mcp_client.list_tools(token=ctx.token)
+                mcp_client = request_ctxt.clients[server.id]
+                raw_tools = await mcp_client.list_tools(token=request_ctxt.token)
 
                 tools_with_schema = self._extract_tools_with_schema(raw_tools)
                 discovered_tools = list(tools_with_schema.keys())

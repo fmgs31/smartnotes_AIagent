@@ -132,7 +132,7 @@ class TestHandleText:
 
 # ── _ensure_tools_discovered ──────────────────────────────────────────────────
 
-def _make_ctx(clients: dict, token: str = "tok", text: str = "") -> _RequestContext:
+def _make_request_ctxt(clients: dict, token: str = "tok", text: str = "") -> _RequestContext:
     return _RequestContext(stack=AsyncExitStack(), token=token, text=text, clients=clients)
 
 
@@ -140,7 +140,7 @@ class TestEnsureToolsDiscovered:
     async def test_discovers_and_caches_tools(self):
         svc, servers = _make_agent()
         mock_client = _mcp_mock(tools=[_tool("search"), _tool("create")])
-        session = _make_ctx({servers[0].id: mock_client})
+        session = _make_request_ctxt({servers[0].id: mock_client})
 
         await svc._ensure_tools_discovered(session)
 
@@ -153,7 +153,7 @@ class TestEnsureToolsDiscovered:
         svc._tool_id_to_schema = {"test-server.search": {}}
         mock_client = _mcp_mock()
 
-        await svc._ensure_tools_discovered(_make_ctx({"test-server": mock_client}))
+        await svc._ensure_tools_discovered(_make_request_ctxt({"test-server": mock_client}))
 
         mock_client.list_tools.assert_not_called()
 
@@ -162,7 +162,7 @@ class TestEnsureToolsDiscovered:
         mock_client = _mcp_mock(tools=[])
 
         with pytest.raises(ValueError, match="No tools available"):
-            await svc._ensure_tools_discovered(_make_ctx({servers[0].id: mock_client}))
+            await svc._ensure_tools_discovered(_make_request_ctxt({servers[0].id: mock_client}))
 
     async def test_allowed_tools_filter_is_applied(self):
         server = ServerConfig(id="s", url="http://s/mcp/", allowed_tools=["search"])
@@ -171,7 +171,7 @@ class TestEnsureToolsDiscovered:
         svc = Agent(registry=registry, model="m", max_plan_steps=5)
         mock_client = _mcp_mock(tools=[_tool("search"), _tool("create")])  # create should be filtered out
 
-        await svc._ensure_tools_discovered(_make_ctx({"s": mock_client}))
+        await svc._ensure_tools_discovered(_make_request_ctxt({"s": mock_client}))
 
         assert "s.search" in svc._tool_id_to_tool
         assert "s.create" not in svc._tool_id_to_tool
