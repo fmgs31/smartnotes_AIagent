@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 from io import BytesIO
 
 from fastapi import Depends, FastAPI, File, Form, UploadFile
@@ -41,13 +41,12 @@ def health():
 async def run(req: InboundRequest):
     await auth.require_authorized_user(req.mcp_token)
     try:
-        sid, tool_call, mcp_result, steps = await svc.handle_text(
+        sid, mcp_result, steps = await svc.handle_text(
             text=req.text,
             token=req.mcp_token,
         )
         return OutboundResponse(
             server_id=sid,
-            tool_call=tool_call,
             mcp_result=mcp_result,
             steps=steps,
         )

@@ -61,10 +61,10 @@ class TestHandleText:
             NextStepPlan(done=True, tool_name=""),
         ]
 
-        sid, tool_call, result, steps = await svc.handle_text(text="find docs", token="tok")
+        sid, result, steps = await svc.handle_text(text="find docs", token="tok")
 
         assert sid == "test-server"
-        assert tool_call.tool_name == "test-server.search"
+        assert steps[-1].tool_name == "test-server.search"
         assert result == "3 documents found"
         assert len(steps) == 1
 
@@ -87,7 +87,7 @@ class TestHandleText:
             NextStepPlan(done=True, tool_name=""),
         ]
 
-        _, _, result, steps = await svc.handle_text(text="search and create", token="tok")
+        _, result, steps = await svc.handle_text(text="search and create", token="tok")
 
         assert len(steps) == 2
         assert result == "second result"

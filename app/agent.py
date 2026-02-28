@@ -7,7 +7,7 @@ from typing import Any
 
 from app.llm_router import Planner
 from app.mcp_client import MCPClient
-from app.schemas import ExecutedToolStep, NextStepPlan, ToolCallPlan
+from app.schemas import ExecutedToolStep, NextStepPlan
 from app.server_registry import ServerConfig, ServerRegistry
 from app.utils import stable_json
 
@@ -80,19 +80,12 @@ class Agent:
                 if executed is None:
                     break
                 steps.append(executed)
-                planning_context.append({
-                    "step": step_idx,
-                    "server_id": executed.server_id,
-                    "tool_name": executed.tool_call.tool_name,
-                    "arguments": executed.tool_call.arguments,
-                    "result_summary": self._summarize_mcp_result(executed.mcp_result),
-                })
 
             if not steps:
                 raise ValueError("Planner did not produce any executable step for this request")
 
             last_step = steps[-1]
-            return last_step.server_id, last_step.tool_call, last_step.mcp_result, steps
+            return last_step.server_id, last_step.mcp_result, steps
 
     async def _get_or_open_client(self, server: ServerConfig, request_ctxt: _RequestContext) -> MCPClient:
         """Return the already-open client for this server, or open a new one and register it with the request stack."""
@@ -127,53 +120,80 @@ class Agent:
         if next_step.done:
             return None
 
-        tool_plan = ToolCallPlan(
-            tool_name=next_step.tool_name,
-            arguments=next_step.arguments or {},
-        )
-        selected = self._tool_id_to_tool.get(tool_plan.tool_name)
-        if selected is None:
-            raise ValueError(f"Planned tool '{tool_plan.tool_name}' is not available")
-        server, real_tool_name = selected
-
-        signature = (tool_plan.tool_name, stable_json(tool_plan.arguments))
-        if signature in seen_signatures:
-            raise ValueError(
-                f"Planner loop detected: repeated step '{tool_plan.tool_name}' with identical arguments"
-            )
-        seen_signatures.add(signature)
+        tool_name = next_step.tool_name
+        arguments = next_step.arguments or {}
+        server, real_tool_name = self._resolve_tool(tool_name, arguments, seen_signatures)
 
         log.info(
             "Step=%s Server=%s ToolId=%s Tool=%s",
-            step_idx, server.id, tool_plan.tool_name, real_tool_name,
+            step_idx, server.id, tool_name, real_tool_name,
         )
         if next_step.explanation:
             log.info("Planner rationale: %s", next_step.explanation)
 
+        result = await self._call_tool(step_idx, server, real_tool_name, arguments, request_ctxt)
+
+        executed = ExecutedToolStep(
+            step=step_idx,
+            server_id=server.id,
+            tool_name=tool_name,
+            arguments=arguments,
+            mcp_result=result,
+        )
+        planning_context.append({
+            "step": step_idx,
+            "server_id": executed.server_id,
+            "tool_name": executed.tool_name,
+            "arguments": executed.arguments,
+            "result_summary": self._summarize_mcp_result(executed.mcp_result),
+        })
+        return executed
+
+    def _resolve_tool(
+        self,
+        tool_name: str,
+        arguments: dict,
+        seen_signatures: set[tuple[str, str]],
+    ) -> tuple[ServerConfig, str]:
+        """Look up the planned tool by id, verify it exists, and guard against repeated identical calls."""
+        selected = self._tool_id_to_tool.get(tool_name)
+        if selected is None:
+            raise ValueError(f"Planned tool '{tool_name}' is not available")
+        server, real_tool_name = selected
+
+        signature = (tool_name, stable_json(arguments))
+        if signature in seen_signatures:
+            raise ValueError(
+                f"Planner loop detected: repeated step '{tool_name}' with identical arguments"
+            )
+        seen_signatures.add(signature)
+
+        return server, real_tool_name
+
+    async def _call_tool(
+        self,
+        step_idx: int,
+        server: ServerConfig,
+        real_tool_name: str,
+        arguments: dict,
+        request_ctxt: _RequestContext,
+    ) -> Any:
+        """Invoke the tool via MCP. Converts exceptions into error-string results so the planner can adapt."""
         mcp_client = await self._get_or_open_client(server, request_ctxt)
         try:
             result = await mcp_client.call_tool(
                 token=request_ctxt.token,
                 tool_name=real_tool_name,
-                arguments=tool_plan.arguments,
+                arguments=arguments,
             )
         except Exception as exc:
-            # Tool call failed (bad arguments, upstream error, etc.).
-            # Feed the error back to the planner as the step result so it can adapt
-            # rather than surfacing this as an unhandled 503/500 to the caller.
             log.warning("Step=%s tool call failed: %s", step_idx, exc)
             result = f"[Tool error] {exc}"
         result_type, result_len = self._result_metrics(result)
         log.debug(f"\n -------------\nMCP SERVER RESULT: {result}\n -------------")
         log.info(f"Step={step_idx} result_type={result_type} result_len={result_len}")
         log.info("\n")
-
-        return ExecutedToolStep(
-            step=step_idx,
-            server_id=server.id,
-            tool_call=tool_plan,
-            mcp_result=result,
-        )
+        return result
 
     async def _ensure_tools_discovered(self, request_ctxt: _RequestContext) -> None:
         """

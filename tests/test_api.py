@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import HTTPException
 
 from app.main import app
-from app.schemas import ExecutedToolStep, ToolCallPlan
+from app.schemas import ExecutedToolStep
 
 VALID_API_KEY = "test-app-api-key"
 VALID_TOKEN = "ya29.valid-token"
@@ -19,14 +19,14 @@ def client():
 
 
 def _success_response():
-    tool_call = ToolCallPlan(tool_name="test-server.search", arguments={"q": "test"})
     step = ExecutedToolStep(
         step=1,
         server_id="test-server",
-        tool_call=tool_call,
+        tool_name="test-server.search",
+        arguments={"q": "test"},
         mcp_result="3 documents found",
     )
-    return "test-server", tool_call, "3 documents found", [step]
+    return "test-server", "3 documents found", [step]
 
 
 # ── /health ────────────────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ class TestRunEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["server_id"] == "test-server"
-        assert data["tool_call"]["tool_name"] == "test-server.search"
+        assert data["steps"][0]["tool_name"] == "test-server.search"
         assert len(data["steps"]) == 1
 
     async def test_missing_api_key_returns_401(self, client):
