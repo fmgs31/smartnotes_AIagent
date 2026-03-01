@@ -19,6 +19,7 @@ class _RequestContext:
     token: str
     text: str
     user_extra_info: str | None = None
+    planner_model: str | None = None
     clients: dict[str, MCPClient] = field(default_factory=dict)
     allowed_tools: list[str] = field(default_factory=list)
     tool_schemas: dict[str, Any] = field(default_factory=dict)
@@ -49,7 +50,7 @@ class Agent:
         self._tool_id_to_schema: dict[str, Any] = {}
         self._discovery_lock = asyncio.Lock()
 
-    async def handle_text(self, *, text: str, token: str, user_extra_info: str | None = None):
+    async def handle_text(self, *, text: str, token: str, user_extra_info: str | None = None, planner_model: str | None = None):
         """
         Main entry point. Runs the planner loop for the given user text and returns
         the server id, tool call, MCP result, and full list of executed steps.
@@ -57,7 +58,7 @@ class Agent:
         """
         async with AsyncExitStack() as stack:
             
-            request_ctxt = _RequestContext(stack=stack, token=token, text=text, user_extra_info=user_extra_info)
+            request_ctxt = _RequestContext(stack=stack, token=token, text=text, user_extra_info=user_extra_info, planner_model=planner_model)
 
             if not self._tool_id_to_tool:
                 for server in self.registry.all():
@@ -88,6 +89,7 @@ class Agent:
                 result = await self._planner.summarize_procedure(
                     text=text,
                     executed_steps=planning_context,
+                    planner_model=request_ctxt.planner_model,
                 )
             except Exception as exc:
                 log.warning("Summarization failed, falling back to last step result: %s", exc)
@@ -120,6 +122,7 @@ class Agent:
         next_step: NextStepPlan = await self._planner.plan_next_step(
             text=request_ctxt.text,
             user_extra_info=request_ctxt.user_extra_info,
+            planner_model=request_ctxt.planner_model,
             allowed_tools=request_ctxt.allowed_tools,
             tool_schemas=request_ctxt.tool_schemas,
             executed_steps=planning_context,

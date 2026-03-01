@@ -6,6 +6,7 @@ class InboundRequest(BaseModel):
     text: str = Field(..., min_length=1)
     mcp_token: str = Field(..., min_length=1)
     user_extra_info: str | None = None
+    planner_model: str | None = None
 
 
 class NextStepPlan(BaseModel):

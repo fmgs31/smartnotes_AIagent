@@ -45,6 +45,7 @@ async def run(req: InboundRequest):
             text=req.text,
             token=req.mcp_token,
             user_extra_info=req.user_extra_info,
+            planner_model=req.planner_model,
         )
         return OutboundResponse(summary=result.text, items=result.items)
     except Exception as e:

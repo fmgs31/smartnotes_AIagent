@@ -60,6 +60,7 @@ class Planner:
         *,
         text: str,
         user_extra_info: str | None = None,
+        planner_model: str | None = None,
         allowed_tools: list[str] | None,
         tool_schemas: dict[str, dict] | None = None,
         executed_steps: list[dict] | None = None,
@@ -82,7 +83,7 @@ class Planner:
         log.info(f"Planning next step: remaining_steps={remaining_steps}, executed_steps={len(executed_steps or [])}")
 
         resp = await self._client.responses.create(
-            model=self._model,
+            model=planner_model or self._model,
             input=[
                 {"role": "system", "content": self._system_prompt},
                 {"role": "user", "content": user},
@@ -110,6 +111,7 @@ class Planner:
         *,
         text: str,
         executed_steps: list[dict],
+        planner_model: str | None = None,
     ) -> ProcedureSummary:
         """Ask the LLM to summarize the completed procedure and extract Drive items."""
         user = (
@@ -120,7 +122,7 @@ class Planner:
         log.info("Summarizing procedure (%d steps)", len(executed_steps))
 
         resp = await self._client.responses.create(
-            model=self._model,
+            model=planner_model or self._model,
             input=[
                 {"role": "system", "content": self._summarize_prompt},
                 {"role": "user", "content": user},

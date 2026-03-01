@@ -21,7 +21,8 @@ def main() -> None:
     body = {
         "text": TEXT,
         "mcp_token": token,
-        "user_extra_info": extra_info
+        "user_extra_info": extra_info,
+        "planner_model": None
     }
     headers = {"X-API-Key": APP_API_KEY}
 
