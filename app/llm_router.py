@@ -4,11 +4,11 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
-from app.schemas import NextStepPlan
+from app.schemas import NextStepPlan, ProcedureSummary
 
 log = logging.getLogger("llm_router")
 
-_SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "next_step_system_prompt.txt"
+_PROMPTS = Path(__file__).resolve().parent / "prompts"
 
 
 class Planner:
@@ -26,15 +26,40 @@ class Planner:
         "required": ["done", "tool_name", "arguments"],
     }
 
+    _SUMMARIZE_SCHEMA = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "text": {"type": "string"},
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "name": {"type": "string"},
+                        "id": {"type": "string"},
+                        "type": {"type": "string"},
+                        "location": {"type": "string"},
+                    },
+                    "required": ["name", "id", "type", "location"],
+                },
+            },
+        },
+        "required": ["text", "items"],
+    }
+
     def __init__(self, client: AsyncOpenAI, model: str):
         self._client = client
         self._model = model
-        self._system_prompt = _SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+        self._system_prompt = (_PROMPTS / "next_step_system_prompt.txt").read_text(encoding="utf-8").strip()
+        self._summarize_prompt = (_PROMPTS / "summarize_system_prompt.txt").read_text(encoding="utf-8").strip()
 
     async def plan_next_step(
         self,
         *,
         text: str,
+        user_extra_info: str | None = None,
         allowed_tools: list[str] | None,
         tool_schemas: dict[str, dict] | None = None,
         executed_steps: list[dict] | None = None,
@@ -43,8 +68,10 @@ class Planner:
         """Ask the LLM for the next step in a multi-step plan."""
         schemas_json = json.dumps(tool_schemas or {}, ensure_ascii=False)
         executed_json = self._summarize_executed_steps(executed_steps or [])
+        context_section = f"Additional context:\n{user_extra_info}\n\n" if user_extra_info else ""
         user = (
             f"User text:\n{text}\n\n"
+            f"{context_section}"
             f"Remaining execution budget (steps): {remaining_steps}\n\n"
             f"Executed steps and outputs so far:\n{executed_json}\n\n"
             f"Allowed tools (IDs):\n{allowed_tools if allowed_tools else 'ANY'}\n\n"
@@ -77,6 +104,40 @@ class Planner:
             f"Planner output: done={plan.done} tool_name={plan.tool_name} has_arguments={bool(plan.arguments)}"
         )
         return plan
+
+    async def summarize_procedure(
+        self,
+        *,
+        text: str,
+        executed_steps: list[dict],
+    ) -> ProcedureSummary:
+        """Ask the LLM to summarize the completed procedure and extract Drive items."""
+        user = (
+            f"User request:\n{text}\n\n"
+            f"Executed steps:\n{self._summarize_executed_steps(executed_steps)}"
+        )
+
+        log.info("Summarizing procedure (%d steps)", len(executed_steps))
+
+        resp = await self._client.responses.create(
+            model=self._model,
+            input=[
+                {"role": "system", "content": self._summarize_prompt},
+                {"role": "user", "content": user},
+            ],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "procedure_summary",
+                    "strict": False,
+                    "schema": self._SUMMARIZE_SCHEMA,
+                }
+            },
+        )
+
+        data = json.loads(self._extract_output_text(resp))
+        log.info("Summary: %s", data.get("text"))
+        return ProcedureSummary(**data)
 
     @staticmethod
     def _extract_output_text(resp) -> str:

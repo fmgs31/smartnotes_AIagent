@@ -41,15 +41,12 @@ def health():
 async def run(req: InboundRequest):
     await auth.require_authorized_user(req.mcp_token)
     try:
-        sid, mcp_result, steps = await svc.handle_text(
+        result, _ = await svc.handle_text(
             text=req.text,
             token=req.mcp_token,
+            user_extra_info=req.user_extra_info,
         )
-        return OutboundResponse(
-            server_id=sid,
-            mcp_result=mcp_result,
-            steps=steps,
-        )
+        return OutboundResponse(summary=result.text, items=result.items)
     except Exception as e:
         log.exception("Request failed")
         raise map_exception_to_http(e)

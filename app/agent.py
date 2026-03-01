@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -7,7 +6,7 @@ from typing import Any
 
 from app.llm_router import Planner
 from app.mcp_client import MCPClient
-from app.schemas import ExecutedToolStep, NextStepPlan
+from app.schemas import ExecutedToolStep, NextStepPlan, ProcedureSummary
 from app.server_registry import ServerConfig, ServerRegistry
 from app.utils import stable_json
 
@@ -19,6 +18,7 @@ class _RequestContext:
     stack: AsyncExitStack
     token: str
     text: str
+    user_extra_info: str | None = None
     clients: dict[str, MCPClient] = field(default_factory=dict)
     allowed_tools: list[str] = field(default_factory=list)
     tool_schemas: dict[str, Any] = field(default_factory=dict)
@@ -49,7 +49,7 @@ class Agent:
         self._tool_id_to_schema: dict[str, Any] = {}
         self._discovery_lock = asyncio.Lock()
 
-    async def handle_text(self, *, text: str, token: str):
+    async def handle_text(self, *, text: str, token: str, user_extra_info: str | None = None):
         """
         Main entry point. Runs the planner loop for the given user text and returns
         the server id, tool call, MCP result, and full list of executed steps.
@@ -57,7 +57,7 @@ class Agent:
         """
         async with AsyncExitStack() as stack:
             
-            request_ctxt = _RequestContext(stack=stack, token=token, text=text)
+            request_ctxt = _RequestContext(stack=stack, token=token, text=text, user_extra_info=user_extra_info)
 
             if not self._tool_id_to_tool:
                 for server in self.registry.all():
@@ -84,8 +84,16 @@ class Agent:
             if not steps:
                 raise ValueError("Planner did not produce any executable step for this request")
 
-            last_step = steps[-1]
-            return last_step.server_id, last_step.mcp_result, steps
+            try:
+                result = await self._planner.summarize_procedure(
+                    text=text,
+                    executed_steps=planning_context,
+                )
+            except Exception as exc:
+                log.warning("Summarization failed, falling back to last step result: %s", exc)
+                result = ProcedureSummary(text=steps[-1].mcp_result or "")
+
+            return result, steps
 
     async def _get_or_open_client(self, server: ServerConfig, request_ctxt: _RequestContext) -> MCPClient:
         """Return the already-open client for this server, or open a new one and register it with the request stack."""
@@ -111,6 +119,7 @@ class Agent:
         """
         next_step: NextStepPlan = await self._planner.plan_next_step(
             text=request_ctxt.text,
+            user_extra_info=request_ctxt.user_extra_info,
             allowed_tools=request_ctxt.allowed_tools,
             tool_schemas=request_ctxt.tool_schemas,
             executed_steps=planning_context,
@@ -132,22 +141,23 @@ class Agent:
             log.info("Planner rationale: %s", next_step.explanation)
 
         result = await self._call_tool(step_idx, server, real_tool_name, arguments, request_ctxt)
+        result_summary = self._summarize_mcp_result(result)
+        log.debug("Step=%s result_summary: %s", step_idx, result_summary)
 
-        executed = ExecutedToolStep(
+        planning_context.append({
+            "step": step_idx,
+            "server_id": server.id,
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "result_summary": result_summary,
+        })
+        return ExecutedToolStep(
             step=step_idx,
             server_id=server.id,
             tool_name=tool_name,
             arguments=arguments,
             mcp_result=result,
         )
-        planning_context.append({
-            "step": step_idx,
-            "server_id": executed.server_id,
-            "tool_name": executed.tool_name,
-            "arguments": executed.arguments,
-            "result_summary": self._summarize_mcp_result(executed.mcp_result),
-        })
-        return executed
 
     def _resolve_tool(
         self,
@@ -177,21 +187,22 @@ class Agent:
         real_tool_name: str,
         arguments: dict,
         request_ctxt: _RequestContext,
-    ) -> Any:
-        """Invoke the tool via MCP. Converts exceptions into error-string results so the planner can adapt."""
+    ) -> str:
+        """Invoke the tool via MCP. Returns the result as a plain string.
+        Converts exceptions into error-string results so the planner can adapt."""
         mcp_client = await self._get_or_open_client(server, request_ctxt)
         try:
-            result = await mcp_client.call_tool(
+            raw = await mcp_client.call_tool(
                 token=request_ctxt.token,
                 tool_name=real_tool_name,
                 arguments=arguments,
             )
+            result = self._extract_result_text(raw)
         except Exception as exc:
             log.warning("Step=%s tool call failed: %s", step_idx, exc)
             result = f"[Tool error] {exc}"
-        result_type, result_len = self._result_metrics(result)
         log.debug(f"\n -------------\nMCP SERVER RESULT: {result}\n -------------")
-        log.info(f"Step={step_idx} result_type={result_type} result_len={result_len}")
+        log.info(f"Step={step_idx} result_len={len(result)}")
         log.info("\n")
         return result
 
@@ -281,27 +292,34 @@ class Agent:
     _SUMMARY_LIMIT = 5000
 
     @staticmethod
-    def _summarize_mcp_result(result: Any) -> str:
-        """
-        Flatten an MCP CallToolResult to a plain string for inclusion in the planner
-        context. Truncates to _SUMMARY_LIMIT characters to keep prompts bounded.
-        """
+    def _extract_result_text(result: Any) -> str:
+        """Extract plain text from an MCP CallToolResult, or pass through strings as-is.
+        Prefers structured_content (newer MCP format) over the legacy content array."""
         if result is None:
             return ""
-
-        # Extract plain text from CallToolResult content items; fall back to str().
+        if isinstance(result, str):
+            return result
+        # Prefer structured_content (newer MCP format): typically {"result": "..."}
+        sc = getattr(result, "structured_content", None)
+        if isinstance(sc, dict):
+            val = sc.get("result")
+            if isinstance(val, str):
+                return val
+        # Fall back to legacy content array
         if hasattr(result, "content"):
             parts = [
                 item.text
                 for item in (result.content or [])
                 if hasattr(item, "text") and isinstance(item.text, str)
             ]
-            text = "\n".join(parts) if parts else str(result)
-        elif isinstance(result, str):
-            text = result
-        else:
-            text = str(result)
+            if parts:
+                return "\n".join(parts)
+        return str(result)
 
+    @staticmethod
+    def _summarize_mcp_result(result: Any) -> str:
+        """Truncate a result string to _SUMMARY_LIMIT characters for the planner context."""
+        text = result if isinstance(result, str) else Agent._extract_result_text(result)
         if len(text) <= Agent._SUMMARY_LIMIT:
             return text
 
@@ -325,14 +343,3 @@ class Agent:
 
         return text[: Agent._SUMMARY_LIMIT] + "...(truncated)"
 
-    @staticmethod
-    def _result_metrics(result: Any) -> tuple[str, int]:
-        """Return (type name, byte length) of an MCP result for logging purposes."""
-        result_type = type(result).__name__
-        try:
-            if isinstance(result, (str, bytes, bytearray)):
-                return result_type, len(result)
-            encoded = json.dumps(result, ensure_ascii=False, default=str)
-            return result_type, len(encoded)
-        except Exception:
-            return result_type, len(str(result))

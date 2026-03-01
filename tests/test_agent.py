@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agent import Agent, _RequestContext
 from app.server_registry import ServerConfig, ServerRegistry
-from app.schemas import NextStepPlan
+from app.schemas import NextStepPlan, ProcedureSummary
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -60,12 +60,12 @@ class TestHandleText:
             NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "test"}),
             NextStepPlan(done=True, tool_name=""),
         ]
+        mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="Found 3 documents.", items=[]))
 
-        sid, result, steps = await svc.handle_text(text="find docs", token="tok")
+        procedure, steps = await svc.handle_text(text="find docs", token="tok")
 
-        assert sid == "test-server"
         assert steps[-1].tool_name == "test-server.search"
-        assert result == "3 documents found"
+        assert isinstance(procedure, ProcedureSummary)
         assert len(steps) == 1
 
     @patch("app.agent.MCPClient")
@@ -86,11 +86,12 @@ class TestHandleText:
             NextStepPlan(done=False, tool_name="test-server.create", arguments={"title": "b"}),
             NextStepPlan(done=True, tool_name=""),
         ]
+        mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="Searched and created.", items=[]))
 
-        _, result, steps = await svc.handle_text(text="search and create", token="tok")
+        procedure, steps = await svc.handle_text(text="search and create", token="tok")
 
         assert len(steps) == 2
-        assert result == "second result"
+        assert isinstance(procedure, ProcedureSummary)
 
     @patch("app.agent.MCPClient")
     async def test_planner_immediately_done_raises(self, mock_mcp_cls):

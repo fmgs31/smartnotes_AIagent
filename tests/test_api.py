@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import HTTPException
 
 from app.main import app
-from app.schemas import ExecutedToolStep
+from app.schemas import ExecutedToolStep, ProcedureSummary, DriveItem
 
 VALID_API_KEY = "test-app-api-key"
 VALID_TOKEN = "ya29.valid-token"
@@ -26,7 +26,11 @@ def _success_response():
         arguments={"q": "test"},
         mcp_result="3 documents found",
     )
-    return "test-server", "3 documents found", [step]
+    procedure = ProcedureSummary(
+        text="Found 3 documents.",
+        items=[DriveItem(name="My Doc", id="abc123", type="document", location="/")],
+    )
+    return procedure, [step]
 
 
 # ── /health ────────────────────────────────────────────────────────────────────
@@ -57,9 +61,8 @@ class TestRunEndpoint:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["server_id"] == "test-server"
-        assert data["steps"][0]["tool_name"] == "test-server.search"
-        assert len(data["steps"]) == 1
+        assert data["summary"] == "Found 3 documents."
+        assert data["items"][0]["id"] == "abc123"
 
     async def test_missing_api_key_returns_401(self, client):
         async with client as c:
