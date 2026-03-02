@@ -70,6 +70,10 @@ If a nextPageToken is present AND the goal has not yet been satisfied by the cur
 - explanation: string (required when done=true; optional otherwise)
 - If done=true, tool_name may be empty and arguments may be {}.
 
+## File naming
+- If a file is being created and the user has not stated a title, infer an appropriate title from the file's content.
+- Do not use a generic placeholder (e.g., "Untitled", "Document 1"). Pick a concise, descriptive title that reflects the actual content.
+
 ## Safety
 - Do not invent user intent beyond the transcript.
 - Do not drop substantial dictated content.
