@@ -1,4 +1,5 @@
-import threading
+﻿import threading
+import time
 import wave
 from io import BytesIO
 from pathlib import Path
@@ -7,9 +8,12 @@ import pyaudio
 import requests
 from token_utils import get_valid_token
 
-RUN_AUDIO_URL = "http://localhost:8001/run-audio"
+RUN_AUDIO_URL = "http://localhost:8001/run"
+
 TOKEN_FILE = Path("gcp_token.json")
 APP_API_KEY = ""
+
+
 
 CHUNK_SIZE = 1024
 CHANNELS = 1
@@ -63,14 +67,28 @@ def record_until_enter() -> bytes:
     return wav_buffer.read()
 
 
+AUDIO_SAVE_DIR = Path("data/audios_sent")
+
+
+def save_audio(audio_bytes: bytes) -> Path:
+    AUDIO_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+    filename = AUDIO_SAVE_DIR / f"{time.strftime('%Y%m%d_%H%M%S')}.wav"
+    filename.write_bytes(audio_bytes)
+    print(f"Audio saved: {filename}")
+    return filename
+
+
 def main() -> None:
     token = get_valid_token(TOKEN_FILE)
     audio_bytes = record_until_enter()
+    save_audio(audio_bytes)
 
     files = {"audio": ("recording.wav", audio_bytes, "audio/wav")}
     data = {"mcp_token": token}
     headers = {"X-API-Key": APP_API_KEY}
-    response = requests.post(RUN_AUDIO_URL, files=files, data=data, headers=headers, timeout=120)
+    start = time.time()
+    response = requests.post(RUN_AUDIO_URL, files=files, data=data, headers=headers, timeout=180)
+    print(f"Request took {time.time() - start:.1f}s")
     print(f"Status: {response.status_code}")
     print(response.text)
 
