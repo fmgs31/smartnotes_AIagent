@@ -78,4 +78,12 @@ async def run_audio(audio: UploadFile = File(...), mcp_token: str = Form(...)):
     finally:
         await audio.close()
 
-    return await run(InboundRequest(text=transcript_text, mcp_token=mcp_token))
+    try:
+        result, _ = await svc.handle_text(
+            text=transcript_text,
+            token=mcp_token,
+        )
+        return OutboundResponse(summary=result.text, items=result.items, transcript=transcript_text)
+    except Exception as e:
+        log.exception("Request failed")
+        raise map_exception_to_http(e)

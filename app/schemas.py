@@ -39,3 +39,4 @@ class ProcedureSummary(BaseModel):
 class OutboundResponse(BaseModel):
     summary: str = ""
     items: list[DriveItem] = Field(default_factory=list)
+    transcript: str | None = None
