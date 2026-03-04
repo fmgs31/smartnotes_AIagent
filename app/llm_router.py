@@ -102,6 +102,7 @@ class Planner:
             },
         )
 
+        self._log_usage(resp, "plan_next_step")
         data = json.loads(self._extract_output_text(resp))
         plan = NextStepPlan(**data)
         log.info(f"Data: {data}")
@@ -141,9 +142,22 @@ class Planner:
             },
         )
 
+        self._log_usage(resp, "summarize_procedure")
         data = json.loads(self._extract_output_text(resp))
         log.info("Summary: %s", data.get("text"))
         return ProcedureSummary(**data)
+
+    @staticmethod
+    def _log_usage(resp, call_name: str) -> None:
+        usage = getattr(resp, "usage", None)
+        if usage:
+            log.info(
+                "%s tokens — input: %s, output: %s, total: %s",
+                call_name,
+                getattr(usage, "input_tokens", "?"),
+                getattr(usage, "output_tokens", "?"),
+                getattr(usage, "total_tokens", "?"),
+            )
 
     @staticmethod
     def _extract_output_text(resp) -> str:
