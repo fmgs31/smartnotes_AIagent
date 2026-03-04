@@ -1,4 +1,5 @@
 ﻿import json
+import os
 import threading
 import time
 import wave
@@ -7,12 +8,15 @@ from pathlib import Path
 
 import pyaudio
 import requests
+from dotenv import load_dotenv
 from token_utils import get_valid_token
+
+load_dotenv()
 
 RUN_AUDIO_URL = "http://localhost:8001/run-audio"
 
 TOKEN_FILE = Path("gcp_token.json")
-APP_API_KEY = ""
+APP_API_KEY = os.environ["APP_API_KEY"]
 
 
 
@@ -87,8 +91,15 @@ def main() -> None:
 
     known_drive_items = [{"name":"Ideas sueltas","id":"1mERgByV9OKSEh5VMOihvFp2HSWy_UaI8",
                           "type":"folder","location":"/"}]
-    user_guidelines = """Phrases like 'nueva idea', 'idea suelta', 'new idea', or 'nueva idea suelta' are trigger phrases — they are instructions, not content.
-    When you see one: (1) the file content is ONLY the text that follows the trigger phrase and any topic qualifier — never include the trigger or topic in the file body; (2) if a topic is mentioned (e.g. 'nueva idea suelta sobre la consciencia'), create the file inside a subfolder named after the topic (e.g. 'consciencia') within 'Ideas Sueltas', creating that subfolder first if it does not exist; (3) if no topic is mentioned, create the file directly in 'Ideas Sueltas'; (4) always create the file directly in its final destination — never create it elsewhere and move it."""
+    user_guidelines = """Some phrases are trigger phrases — they are instructions, not content. Rules that apply to all triggers:
+    - The file content is ONLY the text that follows the trigger phrase and any topic qualifier — never include the trigger or topic in the file body.
+    - Always create the file directly in its final destination — never create it elsewhere and move it.
+    - Folder names in the mappings below refer to existing folders. Always look them up by name to get their ID before using them — never assume they don't exist and create new ones.
+    - Only create a folder if the lookup confirms it does not exist. Create any missing intermediate folders before creating the file.
+
+    Trigger mappings (check in this order):
+    - 'idea para un cuento', 'nueva idea para un cuento': create in 'Cuentos/Ideas'.
+    - 'nueva idea', 'idea suelta', 'new idea', 'nueva idea suelta' (only if the phrase does NOT contain 'para un cuento'): create in 'Ideas Sueltas'. If a topic is mentioned (e.g. 'nueva idea suelta sobre la consciencia'), create instead inside a subfolder named after the topic (e.g. 'consciencia') within 'Ideas Sueltas', unless a similar subfolder already exists."""
 
 
     files = {"audio": ("recording.wav", audio_bytes, "audio/wav")}
