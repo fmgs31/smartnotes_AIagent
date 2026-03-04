@@ -18,7 +18,8 @@ class _RequestContext:
     stack: AsyncExitStack
     token: str
     text: str
-    user_extra_info: str | None = None
+    known_drive_items: list | str | None = None
+    user_guidelines: str | None = None
     planner_model: str | None = None
     clients: dict[str, MCPClient] = field(default_factory=dict)
     allowed_tools: list[str] = field(default_factory=list)
@@ -50,7 +51,7 @@ class Agent:
         self._tool_id_to_schema: dict[str, Any] = {}
         self._discovery_lock = asyncio.Lock()
 
-    async def handle_text(self, *, text: str, token: str, user_extra_info: str | None = None, planner_model: str | None = None):
+    async def handle_text(self, *, text: str, token: str, known_drive_items: list | str | None = None, user_guidelines: str | None = None, planner_model: str | None = None):
         """
         Main entry point. Runs the planner loop for the given user text and returns
         the server id, tool call, MCP result, and full list of executed steps.
@@ -58,7 +59,7 @@ class Agent:
         """
         async with AsyncExitStack() as stack:
             
-            request_ctxt = _RequestContext(stack=stack, token=token, text=text, user_extra_info=user_extra_info, planner_model=planner_model)
+            request_ctxt = _RequestContext(stack=stack, token=token, text=text, known_drive_items=known_drive_items, user_guidelines=user_guidelines, planner_model=planner_model)
 
             if not self._tool_id_to_tool:
                 for server in self.registry.all():
@@ -121,7 +122,8 @@ class Agent:
         """
         next_step: NextStepPlan = await self._planner.plan_next_step(
             text=request_ctxt.text,
-            user_extra_info=request_ctxt.user_extra_info,
+            known_drive_items=request_ctxt.known_drive_items,
+            user_guidelines=request_ctxt.user_guidelines,
             planner_model=request_ctxt.planner_model,
             allowed_tools=request_ctxt.allowed_tools,
             tool_schemas=request_ctxt.tool_schemas,
@@ -325,6 +327,8 @@ class Agent:
         text = result if isinstance(result, str) else Agent._extract_result_text(result)
         if len(text) <= Agent._SUMMARY_LIMIT:
             return text
+
+        # TODO: Use proper summary maybe.
 
         # # Always preserve the nextPageToken even after truncation so the planner
         # # can use it for cursor-based pagination.

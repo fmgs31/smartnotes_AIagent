@@ -5,7 +5,8 @@ from typing import Any, Dict
 class InboundRequest(BaseModel):
     text: str = Field(..., min_length=1)
     mcp_token: str = Field(..., min_length=1)
-    user_extra_info: str | None = None
+    known_drive_items: list[dict] | None = None
+    user_guidelines: str | None = None
     planner_model: str | None = None
 
 

@@ -59,7 +59,8 @@ class Planner:
         self,
         *,
         text: str,
-        user_extra_info: str | None = None,
+        known_drive_items: list | str | None = None,
+        user_guidelines: str | None = None,
         planner_model: str | None = None,
         allowed_tools: list[str] | None,
         tool_schemas: dict[str, dict] | None = None,
@@ -69,10 +70,13 @@ class Planner:
         """Ask the LLM for the next step in a multi-step plan."""
         schemas_json = json.dumps(tool_schemas or {}, ensure_ascii=False)
         executed_json = self._summarize_executed_steps(executed_steps or [])
-        context_section = f"Additional context:\n{user_extra_info}\n\n" if user_extra_info else ""
+        items_str = json.dumps(known_drive_items, ensure_ascii=False) if isinstance(known_drive_items, list) else known_drive_items
+        drive_items_section = f"Known Drive items:\n{items_str}\n\n" if items_str else ""
+        guidelines_section = f"User guidelines:\n{user_guidelines}\n\n" if user_guidelines else ""
         user = (
-            f"User text:\n{text}\n\n"
-            f"{context_section}"
+            f"User request:\n{text}\n\n"
+            f"{drive_items_section}"
+            f"{guidelines_section}"
             f"Remaining execution budget (steps): {remaining_steps}\n\n"
             f"Executed steps and outputs so far:\n{executed_json}\n\n"
             f"Allowed tools (IDs):\n{allowed_tools if allowed_tools else 'ANY'}\n\n"

@@ -16,6 +16,20 @@ from app.agent import Agent
 configure_app_logging()
 log = logging.getLogger("api")
 
+
+class AudioRequest:
+    def __init__(
+        self,
+        mcp_token: str = Form(...),
+        known_drive_items: str | None = Form(None),
+        user_guidelines: str | None = Form(None),
+        planner_model: str | None = Form(None),
+    ):
+        self.mcp_token = mcp_token
+        self.known_drive_items = known_drive_items
+        self.user_guidelines = user_guidelines
+        self.planner_model = planner_model
+
 app = FastAPI(title="MCP + LLM Gateway", version="1.0.0")
 openai_client = AsyncOpenAI()
 
@@ -44,7 +58,8 @@ async def run(req: InboundRequest):
         result, _ = await svc.handle_text(
             text=req.text,
             token=req.mcp_token,
-            user_extra_info=req.user_extra_info,
+            known_drive_items=req.known_drive_items,
+            user_guidelines=req.user_guidelines,
             planner_model=req.planner_model,
         )
         return OutboundResponse(summary=result.text, items=result.items)
@@ -54,8 +69,8 @@ async def run(req: InboundRequest):
 
 
 @app.post("/run-audio", response_model=OutboundResponse, dependencies=[Depends(auth.require_api_key)])
-async def run_audio(audio: UploadFile = File(...), mcp_token: str = Form(...)):
-    await auth.require_authorized_user(mcp_token)
+async def run_audio(audio: UploadFile = File(...), req: AudioRequest = Depends()):
+    await auth.require_authorized_user(req.mcp_token)
     try:
         audio_bytes = await audio.read()
         if not audio_bytes:
@@ -81,7 +96,10 @@ async def run_audio(audio: UploadFile = File(...), mcp_token: str = Form(...)):
     try:
         result, _ = await svc.handle_text(
             text=transcript_text,
-            token=mcp_token,
+            token=req.mcp_token,
+            known_drive_items=req.known_drive_items,
+            user_guidelines=req.user_guidelines,
+            planner_model=req.planner_model,
         )
         return OutboundResponse(summary=result.text, items=result.items, transcript=transcript_text)
     except Exception as e:

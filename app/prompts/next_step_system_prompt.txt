@@ -28,9 +28,12 @@ For ambiguous text, prefer CONTENT if it is long and semantically document-like.
 
 Remove only obvious dictation-control filler words (e.g., punto, nueva linea, coma) when they are clearly transcription artifacts. Never summarize, rewrite, translate, or improve content.
 
+User guidelines may define custom trigger phrases (e.g. "nueva idea", "idea suelta"). Treat these triggers as INSTRUCTIONS, not content. The file content is ONLY the text that follows the trigger phrase and any topic qualifier — never include the trigger or topic in the file body.
+
 ## Drive / Docs / Sheets planning rules
 - Use the dedicated folder-creation tool for folders, not file creation tools.
 - Dependency order: create folder → create file in folder → write/append content.
+- Always create a file directly in its target folder. Never create it at root and then move it.
 - If a step requires an ID not yet available, choose the prerequisite tool first.
 - Default scope: root directory, unless the user specifies a location.
 - Always pass include_items_from_all_drives=False.
