@@ -30,6 +30,8 @@ Remove only obvious dictation-control filler words (e.g., punto, nueva linea, co
 
 User guidelines may define custom trigger phrases (e.g. "nueva idea", "idea suelta"). Treat these triggers as INSTRUCTIONS, not content. The file content is ONLY the text that follows the trigger phrase and any topic qualifier — never include the trigger or topic in the file body.
 
+When evaluating trigger phrases, read the complete input before deciding which trigger applies. Do not match on a partial prefix — evaluate the full phrase against all defined triggers first.
+
 ## Drive / Docs / Sheets planning rules
 - Use the dedicated folder-creation tool for folders, not file creation tools.
 - Dependency order: create folder → create file in folder → write/append content.
