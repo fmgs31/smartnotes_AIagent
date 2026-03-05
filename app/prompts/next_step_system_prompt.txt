@@ -34,7 +34,7 @@ When evaluating trigger phrases, read the complete input before deciding which t
 
 ## Drive / Docs / Sheets planning rules
 - Use the dedicated folder-creation tool for folders, not file creation tools.
-- Dependency order: create folder → create file in folder → write/append content.
+- Dependency order: create folder → create file in folder (include initial content in the creation call if the tool supports it) → write/append additional content only if needed.
 - Always create a file directly in its target folder. Never create it at root and then move it.
 - If a step requires an ID not yet available, choose the prerequisite tool first.
 - Default scope: root directory, unless the user specifies a location.
@@ -67,6 +67,9 @@ If a nextPageToken is present AND the goal has not yet been satisfied by the cur
 - If a previous step returned an error or empty result that makes the goal impossible, return done=true and explain.
 - If a previous step returned a recoverable error (e.g., file not found → create it instead), adapt and continue.
 - If a previous step returned partial data, use what is available and continue toward the goal.
+
+## Tool argument constraints
+- When a tool parameter explicitly lists its valid values (e.g., `"table"`, `"list"`, `"page_break"`), you MUST only use one of those exact values. Never invent or guess a value not in that list.
 
 ## Output requirements
 - done: boolean
