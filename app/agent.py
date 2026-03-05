@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
@@ -136,29 +137,39 @@ class Agent:
 
         tool_name = next_step.tool_name
         arguments = next_step.arguments or {}
-        server, real_tool_name = self._resolve_tool(tool_name, arguments, seen_signatures)
+        try:
+            server, real_tool_name = self._resolve_tool(tool_name, arguments, seen_signatures)
+        except ValueError as exc:
+            log.warning("Step=%s resolve failed: %s", step_idx, exc)
+            result = f"[Agent error] {exc}"
+            server_id = ""
+        else:
+            server_id = server.id
+            log.info(
+                "Step=%s Server=%s ToolId=%s Tool=%s",
+                step_idx, server.id, tool_name, real_tool_name,
+            )
+            if next_step.explanation:
+                log.info("Planner rationale: %s", next_step.explanation)
+            try:
+                result = await self._call_tool(step_idx, server, real_tool_name, arguments, request_ctxt)
+            except Exception as exc:
+                log.warning("Step=%s tool call failed: %s", step_idx, exc)
+                result = f"[Tool error] {exc}"
 
-        log.info(
-            "Step=%s Server=%s ToolId=%s Tool=%s",
-            step_idx, server.id, tool_name, real_tool_name,
-        )
-        if next_step.explanation:
-            log.info("Planner rationale: %s", next_step.explanation)
-
-        result = await self._call_tool(step_idx, server, real_tool_name, arguments, request_ctxt)
         result_summary = self._summarize_mcp_result(result)
         log.debug("Step=%s result_summary: %s", step_idx, result_summary)
 
         planning_context.append({
             "step": step_idx,
-            "server_id": server.id,
+            "server_id": server_id,
             "tool_name": tool_name,
             "arguments": arguments,
             "result_summary": result_summary,
         })
         return ExecutedToolStep(
             step=step_idx,
-            server_id=server.id,
+            server_id=server_id,
             tool_name=tool_name,
             arguments=arguments,
             mcp_result=result,
@@ -193,22 +204,17 @@ class Agent:
         arguments: dict,
         request_ctxt: _RequestContext,
     ) -> str:
-        """Invoke the tool via MCP. Returns the result as a plain string.
-        Converts exceptions into error-string results so the planner can adapt."""
+        """Invoke the tool via MCP. Returns the result as a plain string. Raises on failure."""
         mcp_client = await self._get_or_open_client(server, request_ctxt)
-        try:
-            raw = await mcp_client.call_tool(
-                token=request_ctxt.token,
-                tool_name=real_tool_name,
-                arguments=arguments,
-            )
-            result = self._extract_result_text(raw)
-        except Exception as exc:
-            log.warning("Step=%s tool call failed: %s", step_idx, exc)
-            result = f"[Tool error] {exc}"
+        t0 = time.perf_counter()
+        raw = await mcp_client.call_tool(
+            token=request_ctxt.token,
+            tool_name=real_tool_name,
+            arguments=arguments,
+        )
+        result = self._extract_result_text(raw)
+        log.info("Step=%s tool call took %.2fs result_len=%s", step_idx, time.perf_counter() - t0, len(result))
         log.debug(f"\n -------------\nMCP SERVER RESULT: {result}\n -------------")
-        log.info(f"Step={step_idx} result_len={len(result)}")
-        log.info("\n")
         return result
 
     async def _ensure_tools_discovered(self, request_ctxt: _RequestContext) -> None:
