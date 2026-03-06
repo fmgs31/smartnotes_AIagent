@@ -11,7 +11,7 @@ from app.config import settings
 from app.error_mapping import map_exception_to_http
 from app.llm_router import Planner
 from app.logging_config import configure_app_logging
-from app.schemas import InboundRequest
+from app.schemas import EventType, InboundRequest
 from app.server_registry import ServerRegistry
 from app.agent import Agent
 
@@ -100,7 +100,7 @@ async def run_audio(audio: UploadFile = File(...), req: AudioRequest = Depends()
         await audio.close()
 
     async def _stream():
-        yield _sse({"type": "transcript", "text": transcript_text})
+        yield _sse({"type": EventType.TRANSCRIPT, "text": transcript_text})
         async for event in agent.stream(
             text=transcript_text,
             token=req.mcp_token,

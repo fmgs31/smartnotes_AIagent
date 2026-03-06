@@ -1,5 +1,14 @@
+from enum import StrEnum
+
 from pydantic import BaseModel, Field
 from typing import Any, Dict
+
+
+class EventType(StrEnum):
+    STEP = "step"
+    RESULT = "result"
+    ERROR = "error"
+    TRANSCRIPT = "transcript"
 
 
 class InboundRequest(BaseModel):

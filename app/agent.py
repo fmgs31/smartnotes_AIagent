@@ -7,7 +7,7 @@ from typing import Any
 
 from app.llm_router import Planner
 from app.mcp_client import MCPClient
-from app.schemas import ExecutedToolStep, NextStepPlan, ProcedureSummary
+from app.schemas import EventType, ExecutedToolStep, NextStepPlan, ProcedureSummary
 from app.server_registry import ServerConfig, ServerRegistry
 from app.utils import stable_json
 
@@ -115,12 +115,12 @@ class Agent:
             try:
                 async for obj in self._handle(request_ctxt):
                     if isinstance(obj, ExecutedToolStep):
-                        yield {"type": "step", "step": obj.step, "tool": obj.tool_name}
+                        yield {"type": EventType.STEP, "step": obj.step, "tool": obj.tool_name}
                     else:
-                        yield {"type": "result", "summary": obj.text, "items": [item.model_dump() for item in obj.items]}
+                        yield {"type": EventType.RESULT, "summary": obj.text, "items": [item.model_dump() for item in obj.items]}
             except Exception as exc:
                 log.exception("Unhandled error in stream")
-                yield {"type": "error", "detail": str(exc)}
+                yield {"type": EventType.ERROR, "detail": str(exc)}
 
     async def _get_or_open_client(self, server: ServerConfig, request_ctxt: _RequestContext) -> MCPClient:
         """Return the already-open client for this server, or open a new one and register it with the request stack."""
