@@ -43,7 +43,7 @@ def _tool(name: str):
     return SimpleNamespace(name=name, inputSchema={"type": "object"})
 
 
-# ── handle_text ───────────────────────────────────────────────────────────────
+# ── execute ───────────────────────────────────────────────────────────────
 
 class TestHandleText:
     @patch("app.agent.MCPClient")
@@ -62,7 +62,7 @@ class TestHandleText:
         ]
         mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="Found 3 documents.", items=[]))
 
-        procedure, steps = await svc.handle_text(text="find docs", token="tok")
+        procedure, steps = await svc.execute(text="find docs", token="tok")
 
         assert steps[-1].tool_name == "test-server.search"
         assert isinstance(procedure, ProcedureSummary)
@@ -88,7 +88,7 @@ class TestHandleText:
         ]
         mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="Searched and created.", items=[]))
 
-        procedure, steps = await svc.handle_text(text="search and create", token="tok")
+        procedure, steps = await svc.execute(text="search and create", token="tok")
 
         assert len(steps) == 2
         assert isinstance(procedure, ProcedureSummary)
@@ -103,34 +103,41 @@ class TestHandleText:
         mock_mcp_cls.return_value = _mcp_mock()
 
         with pytest.raises(ValueError, match="did not produce"):
-            await svc.handle_text(text="do something", token="tok")
+            await svc.execute(text="do something", token="tok")
 
     @patch("app.agent.MCPClient")
-    async def test_loop_detection_raises(self, mock_mcp_cls):
+    async def test_loop_detection_records_error_and_continues(self, mock_mcp_cls):
         mock_plan = AsyncMock()
         svc, servers = _make_agent(planner=mock_plan)
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
         same = NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "x"})
-        mock_plan.plan_next_step.side_effect = [same, same]
+        mock_plan.plan_next_step.side_effect = [same, same, NextStepPlan(done=True, tool_name="")]
+        mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="partial", items=[]))
         mock_mcp_cls.return_value = _mcp_mock()
 
-        with pytest.raises(ValueError, match="loop detected"):
-            await svc.handle_text(text="loop me", token="tok")
+        procedure, steps = await svc.execute(text="loop me", token="tok")
+
+        assert len(steps) == 2
+        assert "[Agent error]" in steps[1].mcp_result
 
     @patch("app.agent.MCPClient")
-    async def test_unknown_tool_name_raises(self, mock_mcp_cls):
+    async def test_unknown_tool_records_error_and_continues(self, mock_mcp_cls):
         mock_plan = AsyncMock()
         svc, servers = _make_agent(planner=mock_plan)
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
-        mock_plan.plan_next_step.return_value = NextStepPlan(
-            done=False, tool_name="test-server.nonexistent", arguments={}
-        )
+        mock_plan.plan_next_step.side_effect = [
+            NextStepPlan(done=False, tool_name="test-server.nonexistent", arguments={}),
+            NextStepPlan(done=True, tool_name=""),
+        ]
+        mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="failed", items=[]))
         mock_mcp_cls.return_value = _mcp_mock()
 
-        with pytest.raises(ValueError, match="not available"):
-            await svc.handle_text(text="call missing tool", token="tok")
+        procedure, steps = await svc.execute(text="call missing tool", token="tok")
+
+        assert len(steps) == 1
+        assert "[Agent error]" in steps[0].mcp_result
 
 
 # ── _ensure_tools_discovered ──────────────────────────────────────────────────

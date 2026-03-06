@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -52,52 +52,75 @@ class Agent:
         self._tool_id_to_schema: dict[str, Any] = {}
         self._discovery_lock = asyncio.Lock()
 
-    async def handle_text(self, *, text: str, token: str, known_drive_items: list | str | None = None, user_guidelines: str | None = None, planner_model: str | None = None):
-        """
-        Main entry point. Runs the planner loop for the given user text and returns
-        the server id, tool call, MCP result, and full list of executed steps.
-        Opens MCP sessions for the duration of the request via AsyncExitStack.
-        """
+    @asynccontextmanager
+    async def _open_context(self, *, text: str, token: str, known_drive_items: list | str | None = None, user_guidelines: str | None = None, planner_model: str | None = None):
+        """Set up MCP clients and yield a ready _RequestContext."""
         async with AsyncExitStack() as stack:
-            
             request_ctxt = _RequestContext(stack=stack, token=token, text=text, known_drive_items=known_drive_items, user_guidelines=user_guidelines, planner_model=planner_model)
-
             if not self._tool_id_to_tool:
                 for server in self.registry.all():
                     await self._get_or_open_client(server, request_ctxt)
                 await self._ensure_tools_discovered(request_ctxt)
-
             request_ctxt.load_tools(self._tool_id_to_tool, self._tool_id_to_schema)
+            yield request_ctxt
 
+    async def _handle(self, request_ctxt: _RequestContext):
+        """Core logic: yields ExecutedToolStep for each step, then the final ProcedureSummary."""
+        planning_context: list[dict[str, Any]] = []
+        seen_signatures: set[tuple[str, str]] = set()
+        steps: list[ExecutedToolStep] = []
+
+        for step_idx in range(1, self.max_plan_steps + 1):
+            executed = await self._run_step(
+                step_idx=step_idx,
+                request_ctxt=request_ctxt,
+                planning_context=planning_context,
+                seen_signatures=seen_signatures,
+            )
+            if executed is None:
+                break
+            steps.append(executed)
+            yield executed
+
+        if not steps:
+            raise ValueError("Planner did not produce any executable step for this request")
+
+        try:
+            result = await self._planner.summarize_procedure(
+                text=request_ctxt.text,
+                executed_steps=planning_context,
+                planner_model=request_ctxt.planner_model,
+            )
+        except Exception as exc:
+            log.warning("Summarization failed, falling back to last step result: %s", exc)
+            result = ProcedureSummary(text=steps[-1].mcp_result or "")
+
+        yield result
+
+    async def execute(self, *, text: str, token: str, known_drive_items: list | str | None = None, user_guidelines: str | None = None, planner_model: str | None = None) -> tuple:
+        """Run the pipeline and return (ProcedureSummary, list[ExecutedToolStep])."""
+        async with self._open_context(text=text, token=token, known_drive_items=known_drive_items, user_guidelines=user_guidelines, planner_model=planner_model) as request_ctxt:
             steps: list[ExecutedToolStep] = []
-            planning_context: list[dict[str, Any]] = []
-            seen_signatures: set[tuple[str, str]] = set()
-
-            for step_idx in range(1, self.max_plan_steps + 1):
-                executed = await self._run_step(
-                    step_idx=step_idx,
-                    request_ctxt=request_ctxt,
-                    planning_context=planning_context,
-                    seen_signatures=seen_signatures,
-                )
-                if executed is None:
-                    break
-                steps.append(executed)
-
-            if not steps:
-                raise ValueError("Planner did not produce any executable step for this request")
-
-            try:
-                result = await self._planner.summarize_procedure(
-                    text=text,
-                    executed_steps=planning_context,
-                    planner_model=request_ctxt.planner_model,
-                )
-            except Exception as exc:
-                log.warning("Summarization failed, falling back to last step result: %s", exc)
-                result = ProcedureSummary(text=steps[-1].mcp_result or "")
-
+            result = None
+            async for obj in self._handle(request_ctxt):
+                if isinstance(obj, ExecutedToolStep):
+                    steps.append(obj)
+                else:
+                    result = obj
             return result, steps
+
+    async def stream(self, *, text: str, token: str, known_drive_items: list | str | None = None, user_guidelines: str | None = None, planner_model: str | None = None):
+        """Async generator yielding step events then a result (or error) event over SSE."""
+        async with self._open_context(text=text, token=token, known_drive_items=known_drive_items, user_guidelines=user_guidelines, planner_model=planner_model) as request_ctxt:
+            try:
+                async for obj in self._handle(request_ctxt):
+                    if isinstance(obj, ExecutedToolStep):
+                        yield {"type": "step", "step": obj.step, "tool": obj.tool_name}
+                    else:
+                        yield {"type": "result", "summary": obj.text, "items": [item.model_dump() for item in obj.items]}
+            except Exception as exc:
+                log.exception("Unhandled error in stream")
+                yield {"type": "error", "detail": str(exc)}
 
     async def _get_or_open_client(self, server: ServerConfig, request_ctxt: _RequestContext) -> MCPClient:
         """Return the already-open client for this server, or open a new one and register it with the request stack."""

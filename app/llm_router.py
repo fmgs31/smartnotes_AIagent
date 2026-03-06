@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from pathlib import Path
 
 from openai import AsyncOpenAI
@@ -86,6 +87,7 @@ class Planner:
 
         log.info(f"Planning next step: remaining_steps={remaining_steps}, executed_steps={len(executed_steps or [])}")
 
+        t0 = time.perf_counter()
         resp = await self._client.responses.create(
             model=planner_model or self._model,
             input=[
@@ -101,7 +103,7 @@ class Planner:
                 }
             },
         )
-
+        log.info("plan_next_step took %.2fs", time.perf_counter() - t0)
         self._log_usage(resp, "plan_next_step")
         data = json.loads(self._extract_output_text(resp))
         plan = NextStepPlan(**data)
@@ -126,6 +128,7 @@ class Planner:
 
         log.info("Summarizing procedure (%d steps)", len(executed_steps))
 
+        t0 = time.perf_counter()
         resp = await self._client.responses.create(
             model=planner_model or self._model,
             input=[
@@ -141,7 +144,7 @@ class Planner:
                 }
             },
         )
-
+        log.info("summarize_procedure took %.2fs", time.perf_counter() - t0)
         self._log_usage(resp, "summarize_procedure")
         data = json.loads(self._extract_output_text(resp))
         log.info("Summary: %s", data.get("text"))

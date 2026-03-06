@@ -1,4 +1,5 @@
-﻿import os
+﻿import json
+import os
 from pathlib import Path
 
 import requests
@@ -14,10 +15,16 @@ APP_API_KEY = os.environ["APP_API_KEY"]
 
 # Edit this variable with the text you want to send.
 TEXT = "¿Qué archivos hay en la carpeta a la pingüina?"
-# TEXT = "Lista las primeras cuatro presentaciones." 
+TEXT = "Lista las primeras cuatro carpetas." 
 # TEXT = "Cuando fue modificado el documento la humanidad final feli?" 
 # TEXT = "Lista los primeros 5 items. Además, si hay un archivo con el nombre 'qwerty123456789' en esa lista, devuelve ID del item. En caso contrario, devuelve además la lista de los 5 items SIGUIENTES (es decir, del 6 al 10)" 
-TEXT = "Nueva idea suelta sobre la consciencia. La consciencia percibe cosas de en medio de la red, no sólo la salida final"
+# TEXT = "Nueva idea suelta sobre la consciencia. La consciencia percibe cosas de en medio de la red, no sólo la salida final"
+# TEXT = "create a document called my conversations with Richard and inside put that they were nice using red font"
+
+# TEXT = "in the document called my conversations with Richard, append the conversation was a video call"
+
+# TEXT = "in the document called my conversations with Richard, append the conversation was a video call"
+TEXT = "que hay en el documento abriendo las alas"
 
 
 known_drive_items = [{"name":"A La Pingïuina","id":"1gfXny7mSdqu--NbVYaNjCGeri9GKNDfi","type":"folder","location":"/"},
@@ -42,9 +49,19 @@ def main() -> None:
     }
     headers = {"X-API-Key": APP_API_KEY}
 
-    response = requests.post(RUN_URL, json=body, headers=headers, timeout=120)
+    # ----- POST WITHOUT STREAM ------
+    # response = requests.post(RUN_URL, json=body, headers=headers, timeout=120)
+    # print(f"Status: {response.status_code}")
+    # print(response.text)
+
+    # ------ POST WIT STREAM ------
+    response = requests.post(RUN_URL, json=body, headers=headers, timeout=120, stream=True)
     print(f"Status: {response.status_code}")
-    print(response.text)
+    for line in response.iter_lines():
+        if line:
+            line = line.decode() if isinstance(line, bytes) else line
+            if line.startswith("data: "):
+                print(json.loads(line[6:]))
 
 
 if __name__ == "__main__":

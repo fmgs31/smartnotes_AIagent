@@ -105,11 +105,13 @@ def main() -> None:
     files = {"audio": ("recording.wav", audio_bytes, "audio/wav")}
     data = {"mcp_token": token, "known_drive_items": json.dumps(known_drive_items), "user_guidelines": user_guidelines, "planner_model": None}
     headers = {"X-API-Key": APP_API_KEY}
-    start = time.time()
-    response = requests.post(RUN_AUDIO_URL, files=files, data=data, headers=headers, timeout=180)
-    print(f"Request took {time.time() - start:.1f}s")
+    response = requests.post(RUN_AUDIO_URL, files=files, data=data, headers=headers, timeout=180, stream=True)
     print(f"Status: {response.status_code}")
-    print(response.text)
+    for line in response.iter_lines():
+        if line:
+            line = line.decode() if isinstance(line, bytes) else line
+            if line.startswith("data: "):
+                print(json.loads(line[6:]))
 
 
 if __name__ == "__main__":

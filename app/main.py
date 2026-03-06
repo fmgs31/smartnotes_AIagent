@@ -1,7 +1,9 @@
-﻿import logging
+﻿import json
+import logging
 from io import BytesIO
 
 from fastapi import Depends, FastAPI, File, Form, UploadFile
+from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI
 
 from app.auth import Auth, load_allowed_emails
@@ -9,7 +11,7 @@ from app.config import settings
 from app.error_mapping import map_exception_to_http
 from app.llm_router import Planner
 from app.logging_config import configure_app_logging
-from app.schemas import InboundRequest, OutboundResponse
+from app.schemas import InboundRequest
 from app.server_registry import ServerRegistry
 from app.agent import Agent
 
@@ -39,7 +41,7 @@ for _srv in registry.all():
 
 planner = Planner(client=openai_client, model=settings.openai_model)
 auth = Auth(api_key=settings.app_api_key, allowed_emails=load_allowed_emails())
-svc = Agent(
+agent = Agent(
     registry=registry,
     planner=planner,
     max_plan_steps=settings.max_plan_steps,
@@ -51,24 +53,28 @@ def health():
     return {"ok": True}
 
 
-@app.post("/run", response_model=OutboundResponse, dependencies=[Depends(auth.require_api_key)])
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+@app.post("/run", dependencies=[Depends(auth.require_api_key)])
 async def run(req: InboundRequest):
     await auth.require_authorized_user(req.mcp_token)
-    try:
-        result, _ = await svc.handle_text(
+
+    async def _stream():
+        async for event in agent.stream(
             text=req.text,
             token=req.mcp_token,
             known_drive_items=req.known_drive_items,
             user_guidelines=req.user_guidelines,
             planner_model=req.planner_model,
-        )
-        return OutboundResponse(summary=result.text, items=result.items)
-    except Exception as e:
-        log.exception("Request failed")
-        raise map_exception_to_http(e)
+        ):
+            yield _sse(event)
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
-@app.post("/run-audio", response_model=OutboundResponse, dependencies=[Depends(auth.require_api_key)])
+@app.post("/run-audio", dependencies=[Depends(auth.require_api_key)])
 async def run_audio(audio: UploadFile = File(...), req: AudioRequest = Depends()):
     await auth.require_authorized_user(req.mcp_token)
     try:
@@ -93,15 +99,15 @@ async def run_audio(audio: UploadFile = File(...), req: AudioRequest = Depends()
     finally:
         await audio.close()
 
-    try:
-        result, _ = await svc.handle_text(
+    async def _stream():
+        yield _sse({"type": "transcript", "text": transcript_text})
+        async for event in agent.stream(
             text=transcript_text,
             token=req.mcp_token,
             known_drive_items=req.known_drive_items,
             user_guidelines=req.user_guidelines,
             planner_model=req.planner_model,
-        )
-        return OutboundResponse(summary=result.text, items=result.items, transcript=transcript_text)
-    except Exception as e:
-        log.exception("Request failed")
-        raise map_exception_to_http(e)
+        ):
+            yield _sse(event)
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")

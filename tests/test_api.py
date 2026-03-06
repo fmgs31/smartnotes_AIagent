@@ -1,10 +1,11 @@
+import json
 import pytest
 import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import HTTPException
 
 from app.main import app
-from app.schemas import ExecutedToolStep, ProcedureSummary, DriveItem
+from app.schemas import DriveItem
 
 VALID_API_KEY = "test-app-api-key"
 VALID_TOKEN = "ya29.valid-token"
@@ -18,19 +19,21 @@ def client():
     )
 
 
-def _success_response():
-    step = ExecutedToolStep(
-        step=1,
-        server_id="test-server",
-        tool_name="test-server.search",
-        arguments={"q": "test"},
-        mcp_result="3 documents found",
-    )
-    procedure = ProcedureSummary(
-        text="Found 3 documents.",
-        items=[DriveItem(name="My Doc", id="abc123", type="document", location="/")],
-    )
-    return procedure, [step]
+def _parse_sse(text: str) -> list[dict]:
+    return [
+        json.loads(line[6:])
+        for line in text.splitlines()
+        if line.startswith("data: ")
+    ]
+
+
+def _success_stream():
+    async def _gen(**kwargs):
+        yield {"type": "step", "step": 1, "tool": "test-server.search"}
+        yield {"type": "result", "summary": "Found 3 documents.", "items": [
+            {"name": "My Doc", "id": "abc123", "type": "document", "location": "/"}
+        ]}
+    return _gen
 
 
 # ── /health ────────────────────────────────────────────────────────────────────
@@ -50,7 +53,7 @@ class TestRunEndpoint:
     @patch("app.main.svc")
     async def test_valid_request_returns_200(self, mock_svc, mock_auth, client):
         mock_auth.return_value = "allowed@example.com"
-        mock_svc.handle_text = AsyncMock(return_value=_success_response())
+        mock_svc.stream = _success_stream()
 
         async with client as c:
             resp = await c.post(
@@ -60,9 +63,10 @@ class TestRunEndpoint:
             )
 
         assert resp.status_code == 200
-        data = resp.json()
-        assert data["summary"] == "Found 3 documents."
-        assert data["items"][0]["id"] == "abc123"
+        events = _parse_sse(resp.text)
+        result = next(e for e in events if e["type"] == "result")
+        assert result["summary"] == "Found 3 documents."
+        assert result["items"][0]["id"] == "abc123"
 
     async def test_missing_api_key_returns_401(self, client):
         async with client as c:
@@ -109,9 +113,13 @@ class TestRunEndpoint:
 
     @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
     @patch("app.main.svc")
-    async def test_service_value_error_returns_400(self, mock_svc, mock_auth, client):
+    async def test_service_error_yields_error_event(self, mock_svc, mock_auth, client):
         mock_auth.return_value = "allowed@example.com"
-        mock_svc.handle_text = AsyncMock(side_effect=ValueError("planner produced no steps"))
+
+        async def _error_stream(**kwargs):
+            yield {"type": "error", "detail": "planner produced no steps"}
+
+        mock_svc.stream = _error_stream
 
         async with client as c:
             resp = await c.post(
@@ -119,21 +127,10 @@ class TestRunEndpoint:
                 json={"text": "do nothing", "mcp_token": VALID_TOKEN},
                 headers={"X-API-Key": VALID_API_KEY},
             )
-        assert resp.status_code == 400
 
-    @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
-    @patch("app.main.svc")
-    async def test_service_runtime_error_returns_500(self, mock_svc, mock_auth, client):
-        mock_auth.return_value = "allowed@example.com"
-        mock_svc.handle_text = AsyncMock(side_effect=RuntimeError("unexpected crash"))
-
-        async with client as c:
-            resp = await c.post(
-                "/run",
-                json={"text": "crash me", "mcp_token": VALID_TOKEN},
-                headers={"X-API-Key": VALID_API_KEY},
-            )
-        assert resp.status_code == 500
+        assert resp.status_code == 200
+        events = _parse_sse(resp.text)
+        assert any(e["type"] == "error" for e in events)
 
     async def test_missing_text_field_returns_422(self, client):
         async with client as c:
@@ -157,7 +154,13 @@ class TestRunEndpoint:
     @patch("app.main.svc")
     async def test_known_drive_items_as_list_accepted(self, mock_svc, mock_auth, client):
         mock_auth.return_value = "allowed@example.com"
-        mock_svc.handle_text = AsyncMock(return_value=_success_response())
+        captured = {}
+
+        async def _gen(**kwargs):
+            captured.update(kwargs)
+            yield {"type": "result", "summary": "", "items": []}
+
+        mock_svc.stream = _gen
 
         async with client as c:
             resp = await c.post(
@@ -171,9 +174,8 @@ class TestRunEndpoint:
             )
 
         assert resp.status_code == 200
-        call_kwargs = mock_svc.handle_text.call_args.kwargs
-        assert isinstance(call_kwargs["known_drive_items"], list)
-        assert call_kwargs["known_drive_items"][0]["id"] == "abc"
+        assert isinstance(captured["known_drive_items"], list)
+        assert captured["known_drive_items"][0]["id"] == "abc"
 
     async def test_known_drive_items_as_string_returns_422(self, client):
         async with client as c:
@@ -199,7 +201,13 @@ class TestRunAudioEndpoint:
         self, mock_openai, mock_svc, mock_auth, client
     ):
         mock_auth.return_value = "allowed@example.com"
-        mock_svc.handle_text = AsyncMock(return_value=_success_response())
+        captured = {}
+
+        async def _gen(**kwargs):
+            captured.update(kwargs)
+            yield {"type": "result", "summary": "Found 3 documents.", "items": []}
+
+        mock_svc.stream = _gen
         mock_transcription = MagicMock()
         mock_transcription.text = "find my documents"
         mock_openai.audio.transcriptions.create = AsyncMock(return_value=mock_transcription)
@@ -213,9 +221,9 @@ class TestRunAudioEndpoint:
             )
 
         assert resp.status_code == 200
-        mock_svc.handle_text.assert_called_once()
-        call_kwargs = mock_svc.handle_text.call_args.kwargs
-        assert call_kwargs["text"] == "find my documents"
+        events = _parse_sse(resp.text)
+        assert any(e["type"] == "transcript" and e["text"] == "find my documents" for e in events)
+        assert captured["text"] == "find my documents"
 
     async def test_missing_api_key_returns_401(self, client):
         async with client as c:
@@ -244,7 +252,7 @@ class TestRunAudioEndpoint:
     async def test_empty_transcription_returns_400(self, mock_openai, mock_auth, client):
         mock_auth.return_value = "allowed@example.com"
         mock_transcription = MagicMock()
-        mock_transcription.text = "   "  # whitespace-only
+        mock_transcription.text = "   "
         mock_openai.audio.transcriptions.create = AsyncMock(return_value=mock_transcription)
 
         async with client as c:
