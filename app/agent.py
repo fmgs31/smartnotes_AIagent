@@ -64,23 +64,33 @@ class Agent:
             request_ctxt.load_tools(self._tool_id_to_tool, self._tool_id_to_schema)
             yield request_ctxt
 
+    _SSE_EVENT_TYPE: dict[type, EventType] = {
+        NextStepPlan: EventType.STEP_PLANNED,
+        ExecutedToolStep: EventType.STEP_RESULT,
+        ProcedureSummary: EventType.RESULT,
+    }
+
     async def _handle(self, request_ctxt: _RequestContext):
-        """Core logic: yields ExecutedToolStep for each step, then the final ProcedureSummary."""
+        """Core logic: yields NextStepPlan and ExecutedToolStep per step, then the final ProcedureSummary."""
         planning_context: list[dict[str, Any]] = []
         seen_signatures: set[tuple[str, str]] = set()
         steps: list[ExecutedToolStep] = []
 
         for step_idx in range(1, self.max_plan_steps + 1):
-            executed = await self._run_step(
+            had_plan = False
+            async for obj in self._run_step(
                 step_idx=step_idx,
                 request_ctxt=request_ctxt,
                 planning_context=planning_context,
                 seen_signatures=seen_signatures,
-            )
-            if executed is None:
+            ):
+                yield obj
+                if isinstance(obj, NextStepPlan):
+                    had_plan = True
+                elif isinstance(obj, ExecutedToolStep):
+                    steps.append(obj)
+            if not had_plan:
                 break
-            steps.append(executed)
-            yield executed
 
         if not steps:
             raise ValueError("Planner did not produce any executable step for this request")
@@ -105,19 +115,20 @@ class Agent:
             async for obj in self._handle(request_ctxt):
                 if isinstance(obj, ExecutedToolStep):
                     steps.append(obj)
-                else:
+                elif isinstance(obj, ProcedureSummary):
                     result = obj
             return result, steps
 
     async def stream(self, *, text: str, token: str, known_drive_items: list | str | None = None, user_guidelines: str | None = None, planner_model: str | None = None):
-        """Async generator yielding step events then a result (or error) event over SSE."""
+        """Async generator yielding typed SSE event dicts for each step and the final result."""
         async with self._open_context(text=text, token=token, known_drive_items=known_drive_items, user_guidelines=user_guidelines, planner_model=planner_model) as request_ctxt:
             try:
                 async for obj in self._handle(request_ctxt):
-                    if isinstance(obj, ExecutedToolStep):
-                        yield {"type": EventType.STEP, "step": obj.step, "tool": obj.tool_name}
-                    else:
-                        yield {"type": EventType.RESULT, "summary": obj.text, "items": [item.model_dump() for item in obj.items]}
+                    d = obj.model_dump()
+                    d["type"] = self._SSE_EVENT_TYPE[type(obj)]
+                    if isinstance(obj, NextStepPlan):
+                        d.pop("done", None)
+                    yield d
             except Exception as exc:
                 log.exception("Unhandled error in stream")
                 yield {"type": EventType.ERROR, "detail": str(exc)}
@@ -138,11 +149,10 @@ class Agent:
         request_ctxt: _RequestContext,
         planning_context: list[dict[str, Any]],
         seen_signatures: set[tuple[str, str]],
-    ) -> ExecutedToolStep | None:
+    ):
         """
-        Execute one planning step. Calls the LLM planner, validates and deduplicates
-        the chosen tool, invokes it via MCP, and returns the result.
-        Returns None when the planner signals it is done.
+        Yields NextStepPlan when the planner chooses a tool, then ExecutedToolStep with the result.
+        Yields nothing if the planner signals done.
         """
         next_step: NextStepPlan = await self._planner.plan_next_step(
             text=request_ctxt.text,
@@ -156,8 +166,20 @@ class Agent:
         )
 
         if next_step.done:
-            return None
+            return
 
+        yield next_step
+        yield await self._execute_step(next_step, step_idx, request_ctxt, planning_context, seen_signatures)
+
+    async def _execute_step(
+        self,
+        next_step: NextStepPlan,
+        step_idx: int,
+        request_ctxt: _RequestContext,
+        planning_context: list[dict[str, Any]],
+        seen_signatures: set[tuple[str, str]],
+    ) -> ExecutedToolStep:
+        """Resolve and call the tool chosen by the planner. Returns the executed step."""
         tool_name = next_step.tool_name
         arguments = next_step.arguments or {}
         try:

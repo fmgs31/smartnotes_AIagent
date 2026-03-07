@@ -29,7 +29,8 @@ def _parse_sse(text: str) -> list[dict]:
 
 def _success_stream():
     async def _gen(**kwargs):
-        yield {"type": "step", "step": 1, "tool": "test-server.search"}
+        yield {"type": "step_planned", "step": 1, "tool_name": "test-server.search", "explanation": None, "arguments": {}}
+        yield {"type": "step_result", "step": 1, "tool_name": "test-server.search", "server_id": "test-server", "arguments": {}, "mcp_result": "3 documents found"}
         yield {"type": "result", "summary": "Found 3 documents.", "items": [
             {"name": "My Doc", "id": "abc123", "type": "document", "location": "/"}
         ]}
@@ -50,10 +51,10 @@ class TestHealth:
 
 class TestRunEndpoint:
     @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
-    @patch("app.main.svc")
-    async def test_valid_request_returns_200(self, mock_svc, mock_auth, client):
+    @patch("app.main.agent")
+    async def test_valid_request_returns_200(self, mock_agent, mock_auth, client):
         mock_auth.return_value = "allowed@example.com"
-        mock_svc.stream = _success_stream()
+        mock_agent.stream = _success_stream()
 
         async with client as c:
             resp = await c.post(
@@ -112,14 +113,14 @@ class TestRunEndpoint:
         assert resp.status_code == 401
 
     @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
-    @patch("app.main.svc")
-    async def test_service_error_yields_error_event(self, mock_svc, mock_auth, client):
+    @patch("app.main.agent")
+    async def test_service_error_yields_error_event(self, mock_agent, mock_auth, client):
         mock_auth.return_value = "allowed@example.com"
 
         async def _error_stream(**kwargs):
             yield {"type": "error", "detail": "planner produced no steps"}
 
-        mock_svc.stream = _error_stream
+        mock_agent.stream = _error_stream
 
         async with client as c:
             resp = await c.post(
@@ -151,8 +152,8 @@ class TestRunEndpoint:
         assert resp.status_code == 422
 
     @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
-    @patch("app.main.svc")
-    async def test_known_drive_items_as_list_accepted(self, mock_svc, mock_auth, client):
+    @patch("app.main.agent")
+    async def test_known_drive_items_as_list_accepted(self, mock_agent, mock_auth, client):
         mock_auth.return_value = "allowed@example.com"
         captured = {}
 
@@ -160,7 +161,7 @@ class TestRunEndpoint:
             captured.update(kwargs)
             yield {"type": "result", "summary": "", "items": []}
 
-        mock_svc.stream = _gen
+        mock_agent.stream = _gen
 
         async with client as c:
             resp = await c.post(
@@ -195,10 +196,10 @@ class TestRunEndpoint:
 
 class TestRunAudioEndpoint:
     @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
-    @patch("app.main.svc")
+    @patch("app.main.agent")
     @patch("app.main.openai_client")
     async def test_valid_audio_transcribed_and_processed(
-        self, mock_openai, mock_svc, mock_auth, client
+        self, mock_openai, mock_agent, mock_auth, client
     ):
         mock_auth.return_value = "allowed@example.com"
         captured = {}
@@ -207,7 +208,7 @@ class TestRunAudioEndpoint:
             captured.update(kwargs)
             yield {"type": "result", "summary": "Found 3 documents.", "items": []}
 
-        mock_svc.stream = _gen
+        mock_agent.stream = _gen
         mock_transcription = MagicMock()
         mock_transcription.text = "find my documents"
         mock_openai.audio.transcriptions.create = AsyncMock(return_value=mock_transcription)

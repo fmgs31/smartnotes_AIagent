@@ -34,6 +34,7 @@ When evaluating trigger phrases, read the complete input before deciding which t
 
 ## Drive / Docs / Sheets planning rules
 - Use the dedicated folder-creation tool for folders, not file creation tools.
+- When creating a document, always use create_drive_file with mime_type='application/vnd.google-apps.document'. Never use the default mime_type='text/plain' for document content.
 - Dependency order: create folder → create file in folder (include initial content in the creation call if the tool supports it) → write/append additional content only if needed.
 - Always create a file directly in its target folder. Never create it at root and then move it.
 - If a step requires an ID not yet available, choose the prerequisite tool first.
@@ -44,14 +45,15 @@ When evaluating trigger phrases, read the complete input before deciding which t
 Transcribed file/folder names are approximate. When resolving a name:
 1. Issue a single name-based search query using the approximate name from the transcript (e.g., name contains 'term', which is case-insensitive), including file_type in that same call if the item type is known.
 2. Compare returned names against the transcript: tolerate ASR spelling differences, accents/diacritics, capitalization, and punctuation differences. Choose a match only if similarity is clearly strong.
-3. If no strong match, go directly to the fallback: list all items in the relevant scope without file_type, paginating through all pages if needed, and repeat the fuzzy comparison on each page. Do NOT retry with a different search query.
+2.5. If step 1 used file_type='document' and returned no match, retry the same name search WITHOUT file_type before proceeding to the full listing fallback. The user may call a file "document" or "documento" even when it is stored as a different format (e.g., text/plain). Do NOT change the name query — only remove the file_type filter.
+3. If still no strong match, go directly to the fallback: list all items in the relevant scope without file_type, paginating through all pages if needed, and repeat the fuzzy comparison on each page. Do NOT retry with a different search query.
 4. If still no match, return done=true and explain.
 5. Forbidden: retrying the search with alternative terms, substrings, or variants of the transcript name (e.g., caball, caballo, lowercase variants).
 
 ### Drive tool parameters
 - Filter by item type using the file_type parameter. Valid values: folder, document, spreadsheet, presentation, slides, sheet, doc, pdf, drawing, form, script, shortcut, site, jam, jamboard. Do NOT invent other values (e.g., 'file' is not valid). Do NOT embed mimeType filters in the query string.
 - Omit file_type when the goal is to list all items regardless of type (e.g., the user asks what is in a folder without specifying a type).
-- Some tools accept a query parameter for raw Drive query syntax. Use it only for full-text content searches (e.g., fullText contains 'term'). Do not use the query string for type or name filtering.
+- Some tools accept a query parameter for raw Drive query syntax. Use name contains 'X' in the query for name-based searches (as in Name resolution step 1), and fullText contains 'X' for content searches. Do not embed mimeType filters in the query string — use the file_type parameter for that.
 - Prefer browsing/listing tools for discovery. Use text-search tools only when a full-text content search is needed.
 
 ## Pagination
