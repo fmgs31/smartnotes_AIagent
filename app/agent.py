@@ -66,7 +66,6 @@ class Agent:
 
     _SSE_EVENT_TYPE: dict[type, EventType] = {
         NextStepPlan: EventType.STEP_PLANNED,
-        ExecutedToolStep: EventType.STEP_RESULT,
         ProcedureSummary: EventType.RESULT,
     }
 
@@ -124,6 +123,8 @@ class Agent:
         async with self._open_context(text=text, token=token, known_drive_items=known_drive_items, user_guidelines=user_guidelines, planner_model=planner_model) as request_ctxt:
             try:
                 async for obj in self._handle(request_ctxt):
+                    if isinstance(obj, ExecutedToolStep):  # Not sending this ones anymore.
+                        continue
                     d = obj.model_dump()
                     d["type"] = self._SSE_EVENT_TYPE[type(obj)]
                     if isinstance(obj, NextStepPlan):
@@ -167,8 +168,8 @@ class Agent:
 
         if next_step.done:
             return
-
-        yield next_step
+        else:
+            yield next_step
         yield await self._execute_step(next_step, step_idx, request_ctxt, planning_context, seen_signatures)
 
     async def _execute_step(

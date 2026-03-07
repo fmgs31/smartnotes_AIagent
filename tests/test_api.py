@@ -29,9 +29,8 @@ def _parse_sse(text: str) -> list[dict]:
 
 def _success_stream():
     async def _gen(**kwargs):
-        yield {"type": "step_planned", "step": 1, "tool_name": "test-server.search", "explanation": None, "arguments": {}}
-        yield {"type": "step_result", "step": 1, "tool_name": "test-server.search", "server_id": "test-server", "arguments": {}, "mcp_result": "3 documents found"}
-        yield {"type": "result", "summary": "Found 3 documents.", "items": [
+        yield {"type": "step_planned", "tool_name": "test-server.search", "explanation": None, "arguments": {}}
+        yield {"type": "result", "text": "Found 3 documents.", "items": [
             {"name": "My Doc", "id": "abc123", "type": "document", "location": "/"}
         ]}
     return _gen
@@ -66,7 +65,7 @@ class TestRunEndpoint:
         assert resp.status_code == 200
         events = _parse_sse(resp.text)
         result = next(e for e in events if e["type"] == "result")
-        assert result["summary"] == "Found 3 documents."
+        assert result["text"] == "Found 3 documents."
         assert result["items"][0]["id"] == "abc123"
 
     async def test_missing_api_key_returns_401(self, client):

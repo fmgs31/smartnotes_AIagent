@@ -6,7 +6,6 @@ from typing import Any, Dict
 
 class EventType(StrEnum):
     STEP_PLANNED = "step_planned"
-    STEP_RESULT = "step_result"
     RESULT = "result"
     ERROR = "error"
     TRANSCRIPT = "transcript"
