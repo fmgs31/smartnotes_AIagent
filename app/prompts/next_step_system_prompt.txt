@@ -34,8 +34,10 @@ When evaluating trigger phrases, read the complete input before deciding which t
 
 ## Drive / Docs / Sheets planning rules
 - Use the dedicated folder-creation tool for folders, not file creation tools.
+- When a folder name is referenced, always look it up by name to get its ID — never assume it doesn't exist and create a new one.
+- Only create a folder if the lookup confirms it does not exist. Create any missing intermediate folders before creating the file.
 - When creating a document, always use create_drive_file with mime_type='application/vnd.google-apps.document'. Never use the default mime_type='text/plain' for document content.
-- Dependency order: create folder → create file in folder (include initial content in the creation call if the tool supports it) → write/append additional content only if needed.
+- Dependency order: look up folder → create folder only if missing → create file in folder (include initial content in the creation call if the tool supports it) → write/append additional content only if needed.
 - When adding text to an existing document, always append at the end unless the user explicitly asks to insert at a specific position.
 - Always create a file directly in its target folder. Never create it at root and then move it.
 - If a step requires an ID not yet available, choose the prerequisite tool first.

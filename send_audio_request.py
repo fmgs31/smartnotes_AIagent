@@ -91,15 +91,14 @@ def main() -> None:
 
     known_drive_items = [{"name":"Ideas sueltas","id":"1mERgByV9OKSEh5VMOihvFp2HSWy_UaI8",
                           "type":"folder","location":"/"}]
-    user_guidelines = """Some phrases are trigger phrases — they are instructions, not content. Rules that apply to all triggers:
-    - The file content is ONLY the text that follows the trigger phrase and any topic qualifier — never include the trigger or topic in the file body.
-    - Always create the file directly in its final destination — never create it elsewhere and move it.
-    - Folder names in the mappings below refer to existing folders. Always look them up by name to get their ID before using them — never assume they don't exist and create new ones.
-    - Only create a folder if the lookup confirms it does not exist. Create any missing intermediate folders before creating the file.
-
+    user_guidelines = """
     Trigger mappings (check in this order):
-    - 'idea para un cuento', 'nueva idea para un cuento': create in 'Cuentos/Ideas'.
-    - 'nueva idea', 'idea suelta', 'new idea', 'nueva idea suelta' (only if the phrase does NOT contain 'para un cuento'): create in 'Ideas Sueltas'. If a topic is mentioned (e.g. 'nueva idea suelta sobre la consciencia'), create instead inside a subfolder named after the topic (e.g. 'consciencia') within 'Ideas Sueltas', unless a similar subfolder already exists."""
+    - 'idea para un cuento', 'nueva idea para un cuento': create a document in 'Cuentos/Ideas/'.
+    - 'nueva idea', 'idea suelta', 'new idea', 'nueva idea suelta' (only if the phrase does NOT contain 'para un cuento'): create a document in 'Ideas Sueltas'. If a topic is mentioned (e.g. 'nueva idea suelta sobre la consciencia'), create instead inside a subfolder named after the topic (e.g. 'consciencia') within 'Ideas Sueltas', unless a similar subfolder already exists.
+    - 'idea para el juego de mesa', 'idea suelta para el juego de mesa', 'idea nueva el juego de mesa': append a cell at the bottom of one of the tabs called "Ideas suelta [X]" in the spreadsheet 'PrototipoJuego/Prototipo Juego', where [X] is the highest number from the ones available. New ideas go into a new cell in the same column, just below the last one. Annotations to an idea go into the immediate column to the right. If there is no room for a new cell in that column, create a new tab called "Ideas suelta [X+1]".
+    - 'adding annotation about the last idea for the boardgame', 'aclaración de la última idea sobre el juego de mesa': in the same spreadsheet and tab as above, write the content in the cell immediately to the right of the last filled cell in the ideas column.
+    - 'Terapia', 'Idea sobre terapia', 'idea del psicólogo': append (2 empty lines + current date + 1 empty line + text dictated by the user + 1 empty line) to the bottom of the document 'Terapia-Autoanálisis/Terapia'.
+    """
 
 
     files = {"audio": ("recording.wav", audio_bytes, "audio/wav")}
