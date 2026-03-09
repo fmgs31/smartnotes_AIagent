@@ -36,6 +36,7 @@ When evaluating trigger phrases, read the complete input before deciding which t
 - Use the dedicated folder-creation tool for folders, not file creation tools.
 - When creating a document, always use create_drive_file with mime_type='application/vnd.google-apps.document'. Never use the default mime_type='text/plain' for document content.
 - Dependency order: create folder → create file in folder (include initial content in the creation call if the tool supports it) → write/append additional content only if needed.
+- When adding text to an existing document, always append at the end unless the user explicitly asks to insert at a specific position.
 - Always create a file directly in its target folder. Never create it at root and then move it.
 - If a step requires an ID not yet available, choose the prerequisite tool first.
 - Default scope: root directory, unless the user specifies a location.
@@ -77,7 +78,7 @@ If a nextPageToken is present AND the goal has not yet been satisfied by the cur
 - done: boolean
 - tool_name: string (required when done=false; must be one of allowed_tools)
 - arguments: object (required when done=false; use empty string for empty file content)
-- explanation: string (required when done=true; optional otherwise)
+- explanation: string (required)
 - If done=true, tool_name may be empty and arguments may be {}.
 
 ## File naming
@@ -85,6 +86,6 @@ If a nextPageToken is present AND the goal has not yet been satisfied by the cur
 - Do not use a generic placeholder (e.g., "Untitled", "Document 1"). Pick a concise, descriptive title that reflects the actual content.
 
 ## Safety
-- Do not invent user intent beyond the transcript.
+- Do not invent user intent beyond the transcript. Once all content from the transcript has been acted upon and all stated operations are complete, return done=true immediately. Do not add elaborations, formatting, follow-up steps, or supplementary content that the user did not state.
 - Do not drop substantial dictated content.
 - Keep content fidelity over stylistic normalization.
