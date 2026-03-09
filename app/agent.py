@@ -203,7 +203,7 @@ class Agent:
                 log.warning("Step=%s tool call failed: %s", step_idx, exc)
                 result = f"[Tool error] {exc}"
 
-        result_summary = self._summarize_mcp_result(result)
+        result_summary = self._cap_result(result)
         log.debug("Step=%s result_summary: %s", step_idx, result_summary)
 
         planning_context.append({
@@ -345,8 +345,6 @@ class Agent:
 
         return tools
 
-    # _NEXT_PAGE_TOKEN_MARKER = "nextPageToken: "
-    _SUMMARY_LIMIT = 5000
 
     @staticmethod
     def _extract_result_text(result: Any) -> str:
@@ -356,13 +354,11 @@ class Agent:
             return ""
         if isinstance(result, str):
             return result
-        # Prefer structured_content (newer MCP format): typically {"result": "..."}
         sc = getattr(result, "structured_content", None)
         if isinstance(sc, dict):
             val = sc.get("result")
             if isinstance(val, str):
                 return val
-        # Fall back to legacy content array
         if hasattr(result, "content"):
             parts = [
                 item.text
@@ -373,32 +369,12 @@ class Agent:
                 return "\n".join(parts)
         return str(result)
 
+    _SUMMARY_LIMIT = 5000
+    
     @staticmethod
-    def _summarize_mcp_result(result: Any) -> str:
-        """Truncate a result string to _SUMMARY_LIMIT characters for the planner context."""
-        text = result if isinstance(result, str) else Agent._extract_result_text(result)
+    def _cap_result(text: str) -> str:
+        """Cap result text at _SUMMARY_LIMIT characters for the planner context."""
         if len(text) <= Agent._SUMMARY_LIMIT:
             return text
-
-        # TODO: Use proper summary maybe.
-
-        # # Always preserve the nextPageToken even after truncation so the planner
-        # # can use it for cursor-based pagination.
-        # # Only append if the token falls beyond the truncation boundary; if it's
-        # # at the beginning (or anywhere within the limit) it is already included.
-        # marker = Agent._NEXT_PAGE_TOKEN_MARKER
-        # token_idx = text.find(marker)
-        # token_suffix = ""
-        # if token_idx != -1:
-        #     line_end = text.find("\n", token_idx)
-        #     token_line = text[token_idx:] if line_end == -1 else text[token_idx:line_end]
-        #     # Append the full token line only when it isn't already fully contained
-        #     # within the truncated portion (covers: token at end, and the edge case
-        #     # where it starts just before the boundary but extends beyond it).
-        #     if token_idx + len(token_line) > Agent._SUMMARY_LIMIT:
-        #         token_suffix = f"\n{token_line}"
-
-        # return text[: Agent._SUMMARY_LIMIT] + "...(truncated)" + token_suffix
-
         return text[: Agent._SUMMARY_LIMIT] + "...(truncated)"
 

@@ -200,48 +200,49 @@ LIMIT = Agent._SUMMARY_LIMIT
 # MARKER = Agent._NEXT_PAGE_TOKEN_MARKER
 
 
-class TestSummarizeMcpResult:
-    # ── basic cases ────────────────────────────────────────────────────────────
-
+class TestExtractResultText:
     def test_none_returns_empty(self):
-        assert Agent._summarize_mcp_result(None) == ""
+        assert Agent._extract_result_text(None) == ""
 
-    def test_short_string_returned_unchanged(self):
-        assert Agent._summarize_mcp_result("hello") == "hello"
+    def test_string_passthrough(self):
+        assert Agent._extract_result_text("hello") == "hello"
 
-    def test_string_exactly_at_limit_returned_unchanged(self):
-        text = "x" * LIMIT
-        assert Agent._summarize_mcp_result(text) == text
-
-    def test_long_string_truncated(self):
-        text = "x" * (LIMIT + 100)
-        result = Agent._summarize_mcp_result(text)
-        assert result == "x" * LIMIT + "...(truncated)"
-
-    def test_non_string_is_converted_via_str(self):
-        result = Agent._summarize_mcp_result({"key": "val"})
+    def test_non_string_falls_back_to_str(self):
+        result = Agent._extract_result_text({"key": "val"})
         assert isinstance(result, str)
         assert "key" in result
 
-    # ── CallToolResult extraction ──────────────────────────────────────────────
-
     def test_calltoolresult_text_is_extracted(self):
         obj = _make_call_result("item 1\nitem 2")
-        assert Agent._summarize_mcp_result(obj) == "item 1\nitem 2"
+        assert Agent._extract_result_text(obj) == "item 1\nitem 2"
 
     def test_calltoolresult_multiple_parts_are_joined(self):
         obj = _make_call_result("part A", "part B")
-        assert Agent._summarize_mcp_result(obj) == "part A\npart B"
+        assert Agent._extract_result_text(obj) == "part A\npart B"
 
     def test_calltoolresult_empty_content_falls_back_to_str(self):
         obj = SimpleNamespace(content=[])
-        result = Agent._summarize_mcp_result(obj)
+        result = Agent._extract_result_text(obj)
         assert isinstance(result, str)
+
+
+class TestCapResult:
+    def test_short_string_returned_unchanged(self):
+        assert Agent._cap_result("hello") == "hello"
+
+    def test_string_exactly_at_limit_returned_unchanged(self):
+        text = "x" * LIMIT
+        assert Agent._cap_result(text) == text
+
+    def test_long_string_truncated(self):
+        text = "x" * (LIMIT + 100)
+        result = Agent._cap_result(text)
+        assert result == "x" * LIMIT + "...(truncated)"
 
     def test_calltoolresult_long_text_truncated(self):
         long_text = "item\n" * 1100  # >5000 chars
         obj = _make_call_result(long_text)
-        result = Agent._summarize_mcp_result(obj)
+        result = Agent._cap_result(Agent._extract_result_text(obj))
         assert result.endswith("...(truncated)")
 
 
