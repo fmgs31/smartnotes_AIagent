@@ -68,49 +68,31 @@ class MCPClient:
         finally:
             await self._close_session()
 
-    def _active_client(self, token: str | None) -> Client | None:
+    def _require_client(self, token: str | None) -> Client:
+        """Return the active client or raise if no session is open."""
         if self._client is None:
-            return None
+            raise RuntimeError("No MCP session is open; call session() first")
         if token != self._session_token:
             raise ValueError("MCPClient session token mismatch")
         return self._client
 
     async def list_tools(self, *, token: str | None = None):
-        active_client = self._active_client(token)
+        client = self._require_client(token)
 
-        if active_client is not None:
-            @self._retry_decorator()
-            async def _do_list_connected():
-                return await asyncio.wait_for(active_client.list_tools(), timeout=settings.mcp_timeout_s)
-
-            return await _do_list_connected()
-
-        @self._retry_decorator()
+        @self._retry_decorator() 
         async def _do_list():
-            async with Client(transport=self._build_transport(token)) as client:
-                return await asyncio.wait_for(client.list_tools(), timeout=settings.mcp_timeout_s)
+            return await asyncio.wait_for(client.list_tools(), timeout=settings.mcp_timeout_s)
 
         return await _do_list()
 
     async def call_tool(self, *, token: str, tool_name: str, arguments: dict):
-        active_client = self._active_client(token)
+        client = self._require_client(token)
 
-        if active_client is not None:
-            @self._retry_decorator()
-            async def _do_call_connected():
-                return await asyncio.wait_for(
-                    active_client.call_tool(name=tool_name, arguments=arguments),
-                    timeout=settings.mcp_timeout_s,
-                )
-
-            return await _do_call_connected()
-
-        @self._retry_decorator()
+        @self._retry_decorator() # won't retry on tool error because those are wrapped as string in the server
         async def _do_call():
-            async with Client(transport=self._build_transport(token)) as client:
-                return await asyncio.wait_for(
-                    client.call_tool(name=tool_name, arguments=arguments),
-                    timeout=settings.mcp_timeout_s,
-                )
+            return await asyncio.wait_for(
+                client.call_tool(name=tool_name, arguments=arguments),
+                timeout=settings.mcp_timeout_s,
+            )
 
         return await _do_call()

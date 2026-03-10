@@ -349,11 +349,20 @@ class Agent:
     @staticmethod
     def _extract_result_text(result: Any) -> str:
         """Extract plain text from an MCP CallToolResult, or pass through strings as-is.
-        Prefers structured_content (newer MCP format) over the legacy content array."""
+        Prefers structured_content (newer MCP format) over the legacy content array.
+        ToolError responses (isError=True) are returned with a [Tool error] prefix so the
+        planner can distinguish a failed step from a tool that returned an error-like string."""
         if result is None:
             return ""
         if isinstance(result, str):
             return result
+        if getattr(result, "isError", False):
+            parts = [
+                item.text
+                for item in (getattr(result, "content", None) or [])
+                if hasattr(item, "text") and isinstance(item.text, str)
+            ]
+            return "[Tool error] " + (parts[0] if parts else "MCP server returned a ToolError")
         sc = getattr(result, "structured_content", None)
         if isinstance(sc, dict):
             val = sc.get("result")

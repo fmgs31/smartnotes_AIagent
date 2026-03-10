@@ -146,9 +146,34 @@ class TestSessionContextManager:
         assert client._client is None  # still cleaned up
 
 
+class TestRequireClient:
+    async def test_raises_when_no_session_open(self):
+        client = MCPClient("http://test/mcp/")
+        with pytest.raises(RuntimeError, match="No MCP session"):
+            client._require_client("tok")
+
+    @patch("app.mcp_client.Client")
+    async def test_raises_on_token_mismatch(self, mock_cls):
+        mock_cls.return_value = _mock_fastmcp_client()
+        client = MCPClient("http://test/mcp/")
+        await client._open_session("token-a")
+
+        with pytest.raises(ValueError, match="mismatch"):
+            client._require_client("token-b")
+
+    @patch("app.mcp_client.Client")
+    async def test_returns_client_when_session_open(self, mock_cls):
+        mock_cls.return_value = _mock_fastmcp_client()
+        client = MCPClient("http://test/mcp/")
+        await client._open_session("tok")
+
+        result = client._require_client("tok")
+        assert result is client._client
+
+
 class TestListTools:
     @patch("app.mcp_client.Client")
-    async def test_uses_active_session_when_open(self, mock_cls):
+    async def test_returns_tools_from_active_session(self, mock_cls):
         fake_tools = [MagicMock()]
         instance = _mock_fastmcp_client(list_tools_result=fake_tools)
         mock_cls.return_value = instance
@@ -156,16 +181,6 @@ class TestListTools:
 
         async with client.session(token="tok"):
             result = await client.list_tools(token="tok")
-
-        assert result is fake_tools
-
-    @patch("app.mcp_client.Client")
-    async def test_creates_transient_connection_without_session(self, mock_cls):
-        fake_tools = [MagicMock()]
-        mock_cls.return_value = _mock_fastmcp_client(list_tools_result=fake_tools)
-        client = MCPClient("http://test/mcp/")
-
-        result = await client.list_tools(token=None)
 
         assert result is fake_tools
 
@@ -178,10 +193,15 @@ class TestListTools:
         with pytest.raises(ValueError, match="mismatch"):
             await client.list_tools(token="token-b")
 
+    async def test_raises_without_session(self):
+        client = MCPClient("http://test/mcp/")
+        with pytest.raises(RuntimeError, match="No MCP session"):
+            await client.list_tools(token="tok")
+
 
 class TestCallTool:
     @patch("app.mcp_client.Client")
-    async def test_uses_active_session_when_open(self, mock_cls):
+    async def test_returns_result_from_active_session(self, mock_cls):
         instance = _mock_fastmcp_client(call_tool_result="search results")
         mock_cls.return_value = instance
         client = MCPClient("http://test/mcp/")
@@ -193,16 +213,10 @@ class TestCallTool:
 
         assert result == "search results"
 
-    @patch("app.mcp_client.Client")
-    async def test_creates_transient_connection_without_session(self, mock_cls):
-        mock_cls.return_value = _mock_fastmcp_client(call_tool_result="created")
+    async def test_raises_without_session(self):
         client = MCPClient("http://test/mcp/")
-
-        result = await client.call_tool(
-            token="tok", tool_name="create", arguments={"title": "Test"}
-        )
-
-        assert result == "created"
+        with pytest.raises(RuntimeError, match="No MCP session"):
+            await client.call_tool(token="tok", tool_name="search", arguments={})
 
     @patch("app.mcp_client.Client")
     async def test_passes_tool_name_and_arguments(self, mock_cls):
@@ -210,7 +224,8 @@ class TestCallTool:
         mock_cls.return_value = instance
         client = MCPClient("http://test/mcp/")
 
-        await client.call_tool(token="tok", tool_name="docs_create", arguments={"x": 1})
+        async with client.session(token="tok"):
+            await client.call_tool(token="tok", tool_name="docs_create", arguments={"x": 1})
 
         instance.call_tool.assert_called_once_with(name="docs_create", arguments={"x": 1})
 
@@ -221,7 +236,8 @@ class TestCallTool:
         mock_cls.return_value = instance
         client = MCPClient("http://test/mcp/")
 
-        result = await client.call_tool(token="tok", tool_name="search", arguments={})
+        async with client.session(token="tok"):
+            result = await client.call_tool(token="tok", tool_name="search", arguments={})
 
         assert result == "ok"
         assert instance.call_tool.call_count == 2
@@ -233,8 +249,25 @@ class TestCallTool:
         mock_cls.return_value = instance
         client = MCPClient("http://test/mcp/")
 
-        with pytest.raises(RetryError):
-            await client.call_tool(token="tok", tool_name="search", arguments={})
+        async with client.session(token="tok"):
+            with pytest.raises(RetryError):
+                await client.call_tool(token="tok", tool_name="search", arguments={})
 
         # mcp_max_retries=2 → 3 total attempts
         assert instance.call_tool.call_count == 3
+
+    @patch("app.mcp_client.Client")
+    async def test_tool_error_result_returned_without_retry(self, mock_cls):
+        """isError=True is a successful HTTP response — call_tool returns it as-is, no retry."""
+        tool_error_result = MagicMock()
+        tool_error_result.isError = True
+
+        instance = _mock_fastmcp_client(call_tool_result=tool_error_result)
+        mock_cls.return_value = instance
+        client = MCPClient("http://test/mcp/")
+
+        async with client.session(token="tok"):
+            result = await client.call_tool(token="tok", tool_name="insert_doc_elements", arguments={})
+
+        assert result is tool_error_result
+        assert instance.call_tool.call_count == 1

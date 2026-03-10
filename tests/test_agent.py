@@ -289,6 +289,14 @@ class TestExtractResultText:
         result = Agent._extract_result_text(obj)
         assert isinstance(result, str)
 
+    def test_tool_error_prefixed(self):
+        obj = SimpleNamespace(isError=True, content=[SimpleNamespace(text="Unsupported element type")])
+        assert Agent._extract_result_text(obj) == "[Tool error] Unsupported element type"
+
+    def test_tool_error_empty_content_uses_fallback(self):
+        obj = SimpleNamespace(isError=True, content=[])
+        assert Agent._extract_result_text(obj) == "[Tool error] MCP server returned a ToolError"
+
 
 class TestCapResult:
     def test_empty_string_returned_unchanged(self):
