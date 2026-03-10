@@ -1,9 +1,13 @@
+import logging
+
 import httpx
 from fastapi import HTTPException, Security
 from fastapi.security import APIKeyHeader
 
 from app.config import settings
 from app.utils import load_json
+
+log = logging.getLogger("auth")
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 _GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
@@ -27,6 +31,8 @@ class Auth:
     def require_api_key(self, x_api_key: str | None = Security(_api_key_header)) -> None:
         """FastAPI dependency: reject requests with a missing or wrong API key."""
         if x_api_key != self._api_key:
+            received = f"{len(x_api_key)} chars" if x_api_key else "none"
+            log.debug(f"API key mismatch: received={received}, expected={len(self._api_key)} chars")
             raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
     async def require_authorized_user(self, token: str) -> str:
