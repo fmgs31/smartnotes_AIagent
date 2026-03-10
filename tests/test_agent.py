@@ -139,6 +139,49 @@ class TestHandleText:
         assert len(steps) == 1
         assert "[Agent error]" in steps[0].mcp_result
 
+    @patch("app.agent.MCPClient")
+    async def test_tool_call_failure_records_error_and_continues(self, mock_mcp_cls):
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
+        svc._tool_id_to_tool = {
+            "test-server.search": (servers[0], "search"),
+            "test-server.create": (servers[0], "create"),
+        }
+        svc._tool_id_to_schema = {"test-server.search": {}, "test-server.create": {}}
+        mock_plan.plan_next_step.side_effect = [
+            NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "x"}),
+            NextStepPlan(done=False, tool_name="test-server.create", arguments={"title": "y"}),
+            NextStepPlan(done=True, tool_name=""),
+        ]
+        mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="partial", items=[]))
+        failing_mock = _mcp_mock()
+        failing_mock.call_tool = AsyncMock(side_effect=[RuntimeError("MCP server error"), "created"])
+        mock_mcp_cls.return_value = failing_mock
+
+        procedure, steps = await svc.execute(text="search then create", token="tok")
+
+        assert len(steps) == 2
+        assert "[Tool error]" in steps[0].mcp_result
+        assert steps[1].mcp_result == "created"
+
+    @patch("app.agent.MCPClient")
+    async def test_max_steps_exhausted_returns_all_steps(self, mock_mcp_cls):
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
+        svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
+        svc._tool_id_to_schema = {"test-server.search": {}}
+        # Always returns a different tool call (different args) — never done
+        mock_plan.plan_next_step.side_effect = [
+            NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": str(i)})
+            for i in range(svc.max_plan_steps)
+        ]
+        mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="done", items=[]))
+        mock_mcp_cls.return_value = _mcp_mock(call_result="result")
+
+        procedure, steps = await svc.execute(text="keep going", token="tok")
+
+        assert len(steps) == svc.max_plan_steps
+
 
 # ── _ensure_tools_discovered ──────────────────────────────────────────────────
 
@@ -212,6 +255,27 @@ class TestExtractResultText:
         assert isinstance(result, str)
         assert "key" in result
 
+    def test_structured_content_preferred(self):
+        obj = SimpleNamespace(
+            structured_content={"result": "from structured"},
+            content=[SimpleNamespace(text="from legacy")],
+        )
+        assert Agent._extract_result_text(obj) == "from structured"
+
+    def test_structured_content_non_string_result_falls_through_to_content(self):
+        obj = SimpleNamespace(
+            structured_content={"result": 42},
+            content=[SimpleNamespace(text="from legacy")],
+        )
+        assert Agent._extract_result_text(obj) == "from legacy"
+
+    def test_structured_content_missing_result_key_falls_through_to_content(self):
+        obj = SimpleNamespace(
+            structured_content={"other": "data"},
+            content=[SimpleNamespace(text="from legacy")],
+        )
+        assert Agent._extract_result_text(obj) == "from legacy"
+
     def test_calltoolresult_text_is_extracted(self):
         obj = _make_call_result("item 1\nitem 2")
         assert Agent._extract_result_text(obj) == "item 1\nitem 2"
@@ -227,6 +291,9 @@ class TestExtractResultText:
 
 
 class TestCapResult:
+    def test_empty_string_returned_unchanged(self):
+        assert Agent._cap_result("") == ""
+
     def test_short_string_returned_unchanged(self):
         assert Agent._cap_result("hello") == "hello"
 

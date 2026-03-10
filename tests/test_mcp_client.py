@@ -213,3 +213,28 @@ class TestCallTool:
         await client.call_tool(token="tok", tool_name="docs_create", arguments={"x": 1})
 
         instance.call_tool.assert_called_once_with(name="docs_create", arguments={"x": 1})
+
+    @patch("app.mcp_client.Client")
+    async def test_retries_on_transient_error_and_succeeds(self, mock_cls):
+        instance = _mock_fastmcp_client(call_tool_result="ok")
+        instance.call_tool = AsyncMock(side_effect=[ConnectionError("blip"), "ok"])
+        mock_cls.return_value = instance
+        client = MCPClient("http://test/mcp/")
+
+        result = await client.call_tool(token="tok", tool_name="search", arguments={})
+
+        assert result == "ok"
+        assert instance.call_tool.call_count == 2
+
+    @patch("app.mcp_client.Client")
+    async def test_raises_retry_error_when_all_attempts_fail(self, mock_cls):
+        instance = _mock_fastmcp_client()
+        instance.call_tool = AsyncMock(side_effect=ConnectionError("always down"))
+        mock_cls.return_value = instance
+        client = MCPClient("http://test/mcp/")
+
+        with pytest.raises(RetryError):
+            await client.call_tool(token="tok", tool_name="search", arguments={})
+
+        # mcp_max_retries=2 → 3 total attempts
+        assert instance.call_tool.call_count == 3
