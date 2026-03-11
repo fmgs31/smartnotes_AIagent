@@ -24,7 +24,7 @@ class Planner:
             "arguments": {"type": "object", "additionalProperties": True},
             "explanation": {"type": "string"},
         },
-        "required": ["done", "tool_name", "arguments"],
+        "required": ["done"],
     }
 
     _SUMMARIZE_SCHEMA = {
