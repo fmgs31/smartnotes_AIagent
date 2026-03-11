@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agent import Agent, _RequestContext
 from app.server_registry import ServerConfig, ServerRegistry
-from app.schemas import NextStepPlan, ProcedureSummary
+from app.schemas import EventType, NextStepPlan, ProcedureSummary
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -359,6 +359,42 @@ class TestCapResult:
     #     obj = _make_call_result(long_text)
     #     result = Agent._summarize_mcp_result(obj)
     #     assert result.endswith("...(truncated)\n" + token_line)
+
+
+class TestStream:
+    @patch("app.agent.MCPClient")
+    async def test_planner_exception_yields_error_event(self, mock_mcp_cls):
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
+        svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
+        svc._tool_id_to_schema = {"test-server.search": {}}
+        mock_plan.plan_next_step.side_effect = RuntimeError("planner exploded")
+        mock_mcp_cls.return_value = _mcp_mock()
+
+        events = [e async for e in svc.stream(text="do something", token="tok")]
+
+        assert len(events) == 1
+        assert events[0]["type"] == EventType.ERROR
+        assert "planner exploded" in events[0]["detail"]
+
+    @patch("app.agent.MCPClient")
+    async def test_summarizer_exception_yields_error_event(self, mock_mcp_cls):
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
+        svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
+        svc._tool_id_to_schema = {"test-server.search": {}}
+        mock_plan.plan_next_step.side_effect = [
+            NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "x"}),
+            NextStepPlan(done=True, tool_name=""),
+        ]
+        mock_plan.summarize_procedure = AsyncMock(side_effect=RuntimeError("summarizer exploded"))
+        mock_mcp_cls.return_value = _mcp_mock()
+
+        events = [e async for e in svc.stream(text="do something", token="tok")]
+
+        error_events = [e for e in events if e["type"] == EventType.ERROR]
+        assert len(error_events) == 1
+        assert "summarizer exploded" in error_events[0]["detail"]
 
 
 class TestExtractToolsWithSchema:

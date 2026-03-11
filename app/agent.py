@@ -7,7 +7,7 @@ from typing import Any
 
 from app.llm_router import Planner
 from app.mcp_client import MCPClient
-from app.schemas import EventType, ExecutedToolStep, NextStepPlan, ProcedureSummary
+from app.schemas import ErrorEvent, EventType, ExecutedToolStep, NextStepPlan, ProcedureSummary
 from app.server_registry import ServerConfig, ServerRegistry
 from app.utils import stable_json
 
@@ -183,7 +183,7 @@ class Agent:
                     yield d
             except Exception as exc:
                 log.exception("Unhandled error in stream")
-                yield {"type": EventType.ERROR, "detail": str(exc)}
+                yield ErrorEvent(detail=str(exc)).model_dump()
 
     async def _get_or_open_client(self, server: ServerConfig, request_ctxt: _RequestContext) -> MCPClient:
         """Return the already-open client for this server, or open a new one and register it with the request stack."""

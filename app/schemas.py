@@ -43,3 +43,8 @@ class DriveItem(BaseModel):
 class ProcedureSummary(BaseModel):
     text: str
     items: list[DriveItem] = Field(default_factory=list)
+
+
+class ErrorEvent(BaseModel):
+    type: str = EventType.ERROR
+    detail: str
