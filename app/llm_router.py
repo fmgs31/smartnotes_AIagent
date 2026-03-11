@@ -60,7 +60,7 @@ class Planner:
         self,
         *,
         text: str,
-        known_drive_items: list | str | None = None,
+        known_drive_items: list = [],
         user_guidelines: str | None = None,
         planner_model: str | None = None,
         allowed_tools: list[str] | None,
@@ -71,7 +71,7 @@ class Planner:
         """Ask the LLM for the next step in a multi-step plan."""
         schemas_json = json.dumps(tool_schemas or {}, ensure_ascii=False)
         executed_json = self._summarize_executed_steps(executed_steps or [])
-        items_str = json.dumps(known_drive_items, ensure_ascii=False) if isinstance(known_drive_items, list) else known_drive_items
+        items_str = json.dumps(known_drive_items, ensure_ascii=False) if known_drive_items else None
         drive_items_section = f"Known Drive items:\n{items_str}\n\n" if items_str else ""
         guidelines_section = f"User guidelines:\n{user_guidelines}\n\n" if user_guidelines else ""
         user = (

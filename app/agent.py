@@ -19,7 +19,8 @@ class _RequestContext:
     stack: AsyncExitStack
     token: str
     text: str
-    known_drive_items: list | str | None = None
+    user_email: str = ""
+    known_drive_items: list = field(default_factory=list)
     user_guidelines: str | None = None
     planner_model: str | None = None
     clients: dict[str, MCPClient] = field(default_factory=dict)
@@ -53,15 +54,33 @@ class Agent:
         self._discovery_lock = asyncio.Lock()
 
     @asynccontextmanager
-    async def _open_context(self, *, text: str, token: str, known_drive_items: list | str | None = None, user_guidelines: str | None = None, planner_model: str | None = None):
+    async def _open_context(
+        self,
+        *,
+        text: str,
+        token: str,
+        user_email: str = "",
+        known_drive_items: list = [],
+        user_guidelines: str | None = None,
+        planner_model: str | None = None,
+        requested_tool_sets: list[str] | None = None,
+    ):
         """Set up MCP clients and yield a ready _RequestContext."""
         async with AsyncExitStack() as stack:
-            request_ctxt = _RequestContext(stack=stack, token=token, text=text, known_drive_items=known_drive_items, user_guidelines=user_guidelines, planner_model=planner_model)
+            request_ctxt = _RequestContext(
+                stack=stack,
+                token=token,
+                text=text,
+                user_email=user_email,
+                known_drive_items=known_drive_items,
+                user_guidelines=user_guidelines,
+                planner_model=planner_model,
+            )
             if not self._tool_id_to_tool:
                 for server in self.registry.all():
                     await self._get_or_open_client(server, request_ctxt)
                 await self._ensure_tools_discovered(request_ctxt)
-            request_ctxt.load_tools(self._tool_id_to_tool, self._tool_id_to_schema)
+            # request_ctxt.load_tools(self._tool_id_to_tool, self._tool_id_to_schema, self._tool_sets_config)
             yield request_ctxt
 
     _SSE_EVENT_TYPE: dict[type, EventType] = {
@@ -100,15 +119,31 @@ class Agent:
                 executed_steps=planning_context,
                 planner_model=request_ctxt.planner_model,
             )
-        except Exception as exc:
-            log.warning("Summarization failed, falling back to last step result: %s", exc)
-            result = ProcedureSummary(text=steps[-1].mcp_result or "")
+        except Exception:
+            log.exception("Summarization failed; cannot preserve Drive items, aborting")
+            raise
 
         yield result
 
-    async def execute(self, *, text: str, token: str, known_drive_items: list | str | None = None, user_guidelines: str | None = None, planner_model: str | None = None) -> tuple:
+    async def execute(
+        self,
+        *,
+        text: str,
+        token: str,
+        user_email: str = "",
+        known_drive_items: list = [],
+        user_guidelines: str | None = None,
+        planner_model: str | None = None,
+    ) -> tuple:
         """Run the pipeline and return (ProcedureSummary, list[ExecutedToolStep])."""
-        async with self._open_context(text=text, token=token, known_drive_items=known_drive_items, user_guidelines=user_guidelines, planner_model=planner_model) as request_ctxt:
+        async with self._open_context(
+            text=text,
+            token=token,
+            user_email=user_email,
+            known_drive_items=known_drive_items,
+            user_guidelines=user_guidelines,
+            planner_model=planner_model,
+        ) as request_ctxt:
             steps: list[ExecutedToolStep] = []
             result = None
             async for obj in self._handle(request_ctxt):
@@ -118,12 +153,28 @@ class Agent:
                     result = obj
             return result, steps
 
-    async def stream(self, *, text: str, token: str, known_drive_items: list | str | None = None, user_guidelines: str | None = None, planner_model: str | None = None):
+    async def stream(
+        self,
+        *,
+        text: str,
+        token: str,
+        user_email: str = "",
+        known_drive_items: list = [],
+        user_guidelines: str | None = None,
+        planner_model: str | None = None,
+    ):
         """Async generator yielding typed SSE event dicts for each step and the final result."""
-        async with self._open_context(text=text, token=token, known_drive_items=known_drive_items, user_guidelines=user_guidelines, planner_model=planner_model) as request_ctxt:
+        async with self._open_context(
+            text=text,
+            token=token,
+            user_email=user_email,
+            known_drive_items=known_drive_items,
+            user_guidelines=user_guidelines,
+            planner_model=planner_model,
+        ) as request_ctxt:
             try:
                 async for obj in self._handle(request_ctxt):
-                    if isinstance(obj, ExecutedToolStep):  # Not sending this ones anymore.
+                    if isinstance(obj, ExecutedToolStep):  # Not sending these anymore.
                         continue
                     d = obj.model_dump()
                     d["type"] = self._SSE_EVENT_TYPE[type(obj)]
@@ -345,7 +396,6 @@ class Agent:
 
         return tools
 
-
     @staticmethod
     def _extract_result_text(result: Any) -> str:
         """Extract plain text from an MCP CallToolResult, or pass through strings as-is.
@@ -379,11 +429,10 @@ class Agent:
         return str(result)
 
     _SUMMARY_LIMIT = 5000
-    
+
     @staticmethod
     def _cap_result(text: str) -> str:
         """Cap result text at _SUMMARY_LIMIT characters for the planner context."""
         if len(text) <= Agent._SUMMARY_LIMIT:
             return text
         return text[: Agent._SUMMARY_LIMIT] + "...(truncated)"
-

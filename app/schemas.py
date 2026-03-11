@@ -14,7 +14,6 @@ class EventType(StrEnum):
 class InboundRequest(BaseModel):
     text: str = Field(..., min_length=1)
     mcp_token: str = Field(..., min_length=1)
-    known_drive_items: list[dict] | None = None
     user_guidelines: str | None = None
     planner_model: str | None = None
 
@@ -44,9 +43,3 @@ class DriveItem(BaseModel):
 class ProcedureSummary(BaseModel):
     text: str
     items: list[DriveItem] = Field(default_factory=list)
-
-
-class OutboundResponse(BaseModel):
-    summary: str = ""
-    items: list[DriveItem] = Field(default_factory=list)
-    transcript: str | None = None

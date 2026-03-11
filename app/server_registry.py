@@ -12,9 +12,8 @@ class ServerConfig:
 
 
 class ServerRegistry:
-    def __init__(self, servers: dict[str, ServerConfig], default_server_id: str):
+    def __init__(self, servers: dict[str, ServerConfig]):
         self._servers = servers
-        self._default = default_server_id
 
     @classmethod
     def load_from_file(cls, path: str) -> "ServerRegistry":
@@ -45,17 +44,7 @@ class ServerRegistry:
 
             servers[sid] = ServerConfig(id=sid, url=url, allowed_tools=allowed_tools)
 
-        default_id = data.get("default_server_id") or servers_list[0]["id"]
-        if default_id not in servers:
-            raise ValueError(f"default_server_id '{default_id}' not found in servers")
-
-        return cls(servers=servers, default_server_id=default_id)
-
-    def get(self, server_id: str | None) -> ServerConfig:
-        sid = server_id or self._default
-        if sid not in self._servers:
-            raise KeyError(f"Unknown server_id: {sid}")
-        return self._servers[sid]
+        return cls(servers=servers)
 
     def all(self) -> list[ServerConfig]:
         return list(self._servers.values())

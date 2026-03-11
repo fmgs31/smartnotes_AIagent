@@ -14,6 +14,7 @@ from app.logging_config import configure_app_logging
 from app.schemas import EventType, InboundRequest
 from app.server_registry import ServerRegistry
 from app.agent import Agent
+from app.utils import load_json
 
 configure_app_logging()
 log = logging.getLogger("api")
@@ -23,12 +24,10 @@ class AudioRequest:
     def __init__(
         self,
         mcp_token: str = Form(...),
-        known_drive_items: str | None = Form(None),
         user_guidelines: str | None = Form(None),
         planner_model: str | None = Form(None),
     ):
         self.mcp_token = mcp_token
-        self.known_drive_items = known_drive_items
         self.user_guidelines = user_guidelines
         self.planner_model = planner_model
 
@@ -59,13 +58,13 @@ def _sse(event: dict) -> str:
 
 @app.post("/run", dependencies=[Depends(auth.require_api_key)])
 async def run(req: InboundRequest):
-    await auth.require_authorized_user(req.mcp_token)
+    email = await auth.require_authorized_user(req.mcp_token)
 
     async def _stream():
         async for event in agent.stream(
             text=req.text,
             token=req.mcp_token,
-            known_drive_items=req.known_drive_items,
+            user_email=email,
             user_guidelines=req.user_guidelines,
             planner_model=req.planner_model,
         ):
@@ -76,7 +75,7 @@ async def run(req: InboundRequest):
 
 @app.post("/run-audio", dependencies=[Depends(auth.require_api_key)])
 async def run_audio(audio: UploadFile = File(...), req: AudioRequest = Depends()):
-    await auth.require_authorized_user(req.mcp_token)
+    email = await auth.require_authorized_user(req.mcp_token)
     try:
         audio_bytes = await audio.read()
         if not audio_bytes:
@@ -104,7 +103,7 @@ async def run_audio(audio: UploadFile = File(...), req: AudioRequest = Depends()
         async for event in agent.stream(
             text=transcript_text,
             token=req.mcp_token,
-            known_drive_items=req.known_drive_items,
+            user_email=email,
             user_guidelines=req.user_guidelines,
             planner_model=req.planner_model,
         ):
