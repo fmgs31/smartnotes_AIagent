@@ -31,7 +31,7 @@ def _mcp_mock(tools=(), call_result="tool output"):
 
     @asynccontextmanager
     async def fake_session(**kwargs):
-        yield
+        yield mock
 
     mock.session = fake_session
     mock.list_tools = AsyncMock(return_value=list(tools))
@@ -193,9 +193,8 @@ class TestEnsureToolsDiscovered:
     async def test_discovers_and_caches_tools(self):
         svc, servers = _make_agent()
         mock_client = _mcp_mock(tools=[_tool("search"), _tool("create")])
-        session = _make_request_ctxt({servers[0].id: mock_client})
 
-        await svc._ensure_tools_discovered(session)
+        await svc._ensure_tools_discovered(_make_request_ctxt({servers[0].id: mock_client}))
 
         assert "test-server.search" in svc._tool_id_to_tool
         assert "test-server.create" in svc._tool_id_to_tool

@@ -5,9 +5,10 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.agent_memory import AgentMemory
 from app.llm_router import Planner
 from app.mcp_client import MCPClient
-from app.schemas import ErrorEvent, EventType, ExecutedToolStep, NextStepPlan, ProcedureSummary
+from app.schemas import DriveItem, ErrorEvent, EventType, ExecutedToolStep, NextStepPlan, ProcedureSummary
 from app.server_registry import ServerConfig, ServerRegistry
 from app.utils import stable_json
 
@@ -43,10 +44,12 @@ class Agent:
         registry: ServerRegistry,
         planner: Planner,
         max_plan_steps: int,
+        agent_memory: AgentMemory | None = None,
     ):
         self.registry = registry
         self._planner = planner
         self.max_plan_steps = max_plan_steps
+        self._agent_memory = agent_memory
         # Maps fully-qualified tool id -> (server_config, real_tool_name)
         self._tool_id_to_tool: dict[str, tuple[ServerConfig, str]] = {}
         # Maps fully-qualified tool id -> input schema (as returned by list_tools)
@@ -67,12 +70,20 @@ class Agent:
     ):
         """Set up MCP clients and yield a ready _RequestContext."""
         async with AsyncExitStack() as stack:
+            merged_items = list(known_drive_items)
+            if self._agent_memory and user_email:
+                stored = await self._agent_memory.load(user_email)
+                if stored:
+                    existing_ids = {i.get("id") for i in merged_items if i.get("id")}
+                    merged_items = merged_items + [i for i in stored if i.get("id") not in existing_ids]
+                    log.debug("Loaded %d Drive items from memory for %s", len(stored), user_email)
+
             request_ctxt = _RequestContext(
                 stack=stack,
                 token=token,
                 text=text,
                 user_email=user_email,
-                known_drive_items=known_drive_items,
+                known_drive_items=merged_items,
                 user_guidelines=user_guidelines,
                 planner_model=planner_model,
             )
@@ -124,6 +135,12 @@ class Agent:
             raise
 
         yield result
+
+        if self._agent_memory and request_ctxt.user_email and result.items:
+            merged: dict[str, DriveItem] = {i["id"]: DriveItem(**i) for i in request_ctxt.known_drive_items if i.get("id")}
+            merged.update({item.id: item for item in result.items})
+            await self._agent_memory.save(request_ctxt.user_email, list(merged.values()))
+            log.debug("Saved %d Drive items to memory for %s", len(merged), request_ctxt.user_email)
 
     async def execute(
         self,

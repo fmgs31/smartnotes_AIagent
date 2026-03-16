@@ -8,6 +8,8 @@ from openai import AsyncOpenAI
 
 from app.auth import Auth, load_allowed_emails
 from app.config import settings
+from app.agent_memory_firestore import FirestoreAgentMemory
+from google.cloud.firestore_v1.async_client import AsyncClient
 from app.error_mapping import map_exception_to_http
 from app.llm_router import Planner
 from app.logging_config import configure_app_logging
@@ -40,10 +42,12 @@ for _srv in registry.all():
 
 planner = Planner(client=openai_client, model=settings.openai_model)
 auth = Auth(api_key=settings.app_api_key, allowed_emails=load_allowed_emails())
+agent_memory = FirestoreAgentMemory(AsyncClient(project=settings.firestore_project)) if settings.firestore_enabled else None
 agent = Agent(
     registry=registry,
     planner=planner,
     max_plan_steps=settings.max_plan_steps,
+    agent_memory=agent_memory,
 )
 
 

@@ -35,5 +35,10 @@ class Settings(BaseSettings):
     # Orchestrator
     max_plan_steps: int = 5
 
+    # Firestore memory — set FIRESTORE_ENABLED=true to enable Drive item persistence.
+    # Project auto-detected via ADC on Cloud Run; override with FIRESTORE_PROJECT if needed.
+    firestore_enabled: bool = False
+    firestore_project: str | None = None
+
 
 settings = Settings()
