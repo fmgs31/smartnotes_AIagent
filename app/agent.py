@@ -91,7 +91,7 @@ class Agent:
                 for server in self.registry.all():
                     await self._get_or_open_client(server, request_ctxt)
                 await self._ensure_tools_discovered(request_ctxt)
-            # request_ctxt.load_tools(self._tool_id_to_tool, self._tool_id_to_schema, self._tool_sets_config)
+            request_ctxt.load_tools(self._tool_id_to_tool, self._tool_id_to_schema)
             yield request_ctxt
 
     _SSE_EVENT_TYPE: dict[type, EventType] = {
