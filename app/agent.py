@@ -92,6 +92,7 @@ class Agent:
                     await self._get_or_open_client(server, request_ctxt)
                 await self._ensure_tools_discovered(request_ctxt)
             request_ctxt.load_tools(self._tool_id_to_tool, self._tool_id_to_schema)
+            log.info("Request context ready: %d tools available", len(request_ctxt.allowed_tools))
             yield request_ctxt
 
     _SSE_EVENT_TYPE: dict[type, EventType] = {
@@ -263,8 +264,7 @@ class Agent:
                 "Step=%s Server=%s ToolId=%s Tool=%s",
                 step_idx, server.id, tool_name, real_tool_name,
             )
-            if next_step.explanation:
-                log.info("Planner rationale: %s", next_step.explanation)
+            log.info("Planner rationale: %s", str(next_step.explanation))
             try:
                 result = await self._call_tool(step_idx, server, real_tool_name, arguments, request_ctxt)
             except Exception as exc:

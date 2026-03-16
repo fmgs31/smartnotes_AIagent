@@ -165,6 +165,31 @@ class TestHandleText:
         assert steps[1].mcp_result == "created"
 
     @patch("app.agent.MCPClient")
+    async def test_tools_are_passed_to_planner(self, mock_mcp_cls):
+        """load_tools must populate allowed_tools and tool_schemas before plan_next_step is called."""
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
+        server = servers[0]
+        mock_mcp_cls.return_value = _mcp_mock(call_result="ok")
+
+        svc._tool_id_to_tool = {"test-server.search": (server, "search")}
+        svc._tool_id_to_schema = {"test-server.search": {"type": "object", "properties": {}}}
+
+        mock_plan.plan_next_step.side_effect = [
+            NextStepPlan(done=False, tool_name="test-server.search", arguments={}),
+            NextStepPlan(done=True, tool_name=""),
+        ]
+        mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="done", items=[]))
+
+        await svc.execute(text="find docs", token="tok")
+
+        call_kwargs = mock_plan.plan_next_step.call_args_list[0][1]
+        assert call_kwargs["allowed_tools"] == ["test-server.search"], \
+            "allowed_tools was empty — load_tools may not have been called"
+        assert call_kwargs["tool_schemas"] == {"test-server.search": {"type": "object", "properties": {}}}, \
+            "tool_schemas was empty — load_tools may not have been called"
+
+    @patch("app.agent.MCPClient")
     async def test_max_steps_exhausted_returns_all_steps(self, mock_mcp_cls):
         mock_plan = AsyncMock()
         svc, servers = _make_agent(planner=mock_plan)
