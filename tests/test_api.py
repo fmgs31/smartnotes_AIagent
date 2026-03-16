@@ -150,46 +150,6 @@ class TestRunEndpoint:
             )
         assert resp.status_code == 422
 
-    @patch("app.main.auth.require_authorized_user", new_callable=AsyncMock)
-    @patch("app.main.agent")
-    async def test_known_drive_items_as_list_accepted(self, mock_agent, mock_auth, client):
-        mock_auth.return_value = "allowed@example.com"
-        captured = {}
-
-        async def _gen(**kwargs):
-            captured.update(kwargs)
-            yield {"type": "result", "summary": "", "items": []}
-
-        mock_agent.stream = _gen
-
-        async with client as c:
-            resp = await c.post(
-                "/run",
-                json={
-                    "text": "find docs",
-                    "mcp_token": VALID_TOKEN,
-                    "known_drive_items": [{"name": "Ideas", "id": "abc", "type": "folder", "location": "/"}],
-                },
-                headers={"X-API-Key": VALID_API_KEY},
-            )
-
-        assert resp.status_code == 200
-        assert isinstance(captured["known_drive_items"], list)
-        assert captured["known_drive_items"][0]["id"] == "abc"
-
-    async def test_known_drive_items_as_string_returns_422(self, client):
-        async with client as c:
-            resp = await c.post(
-                "/run",
-                json={
-                    "text": "find docs",
-                    "mcp_token": VALID_TOKEN,
-                    "known_drive_items": "not a list",
-                },
-                headers={"X-API-Key": VALID_API_KEY},
-            )
-        assert resp.status_code == 422
-
 
 # ── /run-audio ────────────────────────────────────────────────────────────────
 

@@ -19,7 +19,7 @@ class TestLoadFromFile:
     def test_loads_valid_single_server(self, write_servers):
         path = write_servers({"servers": [{"id": "srv", "url": "http://srv/mcp/"}]})
         registry = ServerRegistry.load_from_file(path)
-        server = registry.get("srv")
+        server = registry.all()[0]
         assert server.id == "srv"
         assert server.url == "http://srv/mcp/"
 
@@ -28,12 +28,12 @@ class TestLoadFromFile:
             {"id": "srv", "url": "http://srv/mcp/", "allowed_tools": ["search", "create"]}
         ]})
         registry = ServerRegistry.load_from_file(path)
-        assert registry.get("srv").allowed_tools == ["search", "create"]
+        assert registry.all()[0].allowed_tools == ["search", "create"]
 
     def test_no_allowed_tools_is_none(self, write_servers):
         path = write_servers({"servers": [{"id": "srv", "url": "http://srv/mcp/"}]})
         registry = ServerRegistry.load_from_file(path)
-        assert registry.get("srv").allowed_tools is None
+        assert registry.all()[0].allowed_tools is None
 
     def test_empty_servers_list_raises(self, write_servers):
         path = write_servers({"servers": []})
@@ -69,37 +69,10 @@ class TestLoadFromFile:
         monkeypatch.setenv("SRV_URL", "http://override/mcp/")
         path = write_servers({"servers": [{"id": "srv", "url": "http://original/mcp/"}]})
         registry = ServerRegistry.load_from_file(path)
-        assert registry.get("srv").url == "http://override/mcp/"
-
-    def test_first_server_is_default_when_no_default_set(self, write_servers):
-        path = write_servers({"servers": [
-            {"id": "a", "url": "http://a/mcp/"},
-            {"id": "b", "url": "http://b/mcp/"},
-        ]})
-        registry = ServerRegistry.load_from_file(path)
-        assert registry.get(None).id == "a"
-
-    def test_explicit_default_server_id(self, write_servers):
-        path = write_servers({
-            "default_server_id": "b",
-            "servers": [
-                {"id": "a", "url": "http://a/mcp/"},
-                {"id": "b", "url": "http://b/mcp/"},
-            ],
-        })
-        registry = ServerRegistry.load_from_file(path)
-        assert registry.get(None).id == "b"
-
-    def test_invalid_default_server_id_raises(self, write_servers):
-        path = write_servers({
-            "default_server_id": "missing",
-            "servers": [{"id": "srv", "url": "http://srv/mcp/"}],
-        })
-        with pytest.raises(ValueError, match="not found"):
-            ServerRegistry.load_from_file(path)
+        assert registry.all()[0].url == "http://override/mcp/"
 
 
-class TestGet:
+class TestAll:
     @pytest.fixture
     def registry(self, write_servers):
         path = write_servers({"servers": [
@@ -108,16 +81,14 @@ class TestGet:
         ]})
         return ServerRegistry.load_from_file(path)
 
-    def test_get_by_explicit_id(self, registry):
-        assert registry.get("secondary").id == "secondary"
-
-    def test_get_with_none_returns_default(self, registry):
-        assert registry.get(None).id == "primary"
-
-    def test_get_unknown_id_raises_key_error(self, registry):
-        with pytest.raises(KeyError, match="unknown-id"):
-            registry.get("unknown-id")
-
     def test_all_returns_all_servers(self, registry):
         ids = {s.id for s in registry.all()}
         assert ids == {"primary", "secondary"}
+
+    def test_all_returns_correct_urls(self, registry):
+        urls = {s.url for s in registry.all()}
+        assert "http://primary/mcp/" in urls
+        assert "http://secondary/mcp/" in urls
+
+    def test_all_returns_list(self, registry):
+        assert isinstance(registry.all(), list)
