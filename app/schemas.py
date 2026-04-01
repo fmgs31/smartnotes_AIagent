@@ -38,6 +38,7 @@ class DriveItem(BaseModel):
     id: str
     type: str
     location: str = "/"
+    access_freq: int = 0
 
 
 class ProcedureSummary(BaseModel):
