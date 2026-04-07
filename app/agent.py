@@ -424,7 +424,9 @@ class Agent:
                 for item in (getattr(result, "content", None) or [])
                 if hasattr(item, "text") and isinstance(item.text, str)
             ]
-            return "[Tool error] " + (parts[0] if parts else "MCP server returned a ToolError")
+            error_text = " ".join(parts) if parts else "MCP server returned a ToolError"
+            log.warning("MCP ToolError: %s", error_text)
+            return "[Tool error] " + error_text
         sc = getattr(result, "structured_content", None)
         if isinstance(sc, dict):
             val = sc.get("result")
