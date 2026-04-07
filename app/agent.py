@@ -250,7 +250,7 @@ class Agent:
         try:
             server, real_tool_name = self._resolve_tool(tool_name, arguments, seen_signatures)
         except ValueError as exc:
-            log.warning("Step=%s resolve failed: %s", step_idx, exc)
+            log.warning("Step=%s resolve failed: %s — tool=%s args=%s", step_idx, exc, tool_name, arguments)
             result = f"[Agent error] {exc}"
             server_id = ""
         else:

@@ -12,6 +12,6 @@ send_text_request.py
 send_audio_request.py
 access_token_getter.py
 token_utils.py
-shcemas.json
+schemas.json
 x
 x.json

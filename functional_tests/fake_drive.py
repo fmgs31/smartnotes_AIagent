@@ -1,0 +1,886 @@
+"""
+Filesystem-backed fake Google Drive + MCP client stub.
+
+Directory layout under functional_tests/drive/:
+  - Regular directories  → Google Drive folders  (MIME_FOLDER)
+  - *.txt files          → Google Docs            (MIME_DOC)
+  - *.sheet directories  → Google Sheets          (MIME_SHEET)
+      children *.csv     → individual tabs
+  - .gitkeep / dotfiles  → ignored
+
+FakeDrive keeps an in-memory index (items, contents, sheets) that mirrors
+the filesystem.  Every mutation writes through to disk, so tests can assert
+directly on the real files.  snapshot()/restore() use shutil.copytree so
+the filesystem is fully reverted after each test.
+"""
+import csv as _csv
+import json
+import re
+import shutil
+import tempfile
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+MIME_FOLDER = "application/vnd.google-apps.folder"
+MIME_DOC    = "application/vnd.google-apps.document"
+MIME_SHEET  = "application/vnd.google-apps.spreadsheet"
+
+FILE_TYPE_MIME: dict[str, str] = {
+    "folder":      MIME_FOLDER,
+    "document":    MIME_DOC,
+    "doc":         MIME_DOC,
+    "spreadsheet": MIME_SHEET,
+    "sheet":       MIME_SHEET,
+}
+
+DRIVE_ROOT = Path(__file__).parent / "drive"
+
+
+# ─── CSV helpers ──────────────────────────────────────────────────────────────
+
+def read_csv(path: Path) -> list[list[str]]:
+    with open(path, newline="", encoding="utf-8") as f:
+        return [row for row in _csv.reader(f) if row]  # skip blank lines
+
+
+def write_csv(path: Path, rows: list) -> None:
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = _csv.writer(f)
+        for row in rows:
+            writer.writerow([str(v) for v in row])
+
+
+# ─── FakeDrive ────────────────────────────────────────────────────────────────
+
+class FakeDrive:
+    """
+    In-memory index that mirrors functional_tests/drive/ on disk.
+    All mutations write through to disk.
+    """
+
+    def __init__(self, root: Path = DRIVE_ROOT) -> None:
+        self.root = root.resolve()
+        # id → {id, name, mimeType, parent_id}
+        self.items: dict[str, dict] = {}
+        # doc id → text content  (kept in sync with .txt files)
+        self.contents: dict[str, str] = {}
+        # sheet id → {tab_name → [[row...]]}  (kept in sync with .csv files)
+        self.sheets: dict[str, dict[str, list]] = {}
+        # item_id → filesystem path
+        self._path_map: dict[str, Path] = {}
+        self._counter: int = 1000
+        self._call_log: list[dict] = []
+        self._load()
+
+    # ── loading ──────────────────────────────────────────────────────────────
+
+    def _next_id(self) -> str:
+        self._counter += 1
+        return f"item_{self._counter}"
+
+    def _load(self) -> None:
+        self.items["root"] = {
+            "id": "root", "name": "root",
+            "mimeType": MIME_FOLDER, "parent_id": None,
+        }
+        self._walk(self.root, "root")
+
+    def _walk(self, directory: Path, parent_id: str) -> None:
+        for child in sorted(directory.iterdir()):
+            if child.name.startswith("."):
+                continue  # ignore .gitkeep and other dotfiles
+            if child.is_dir():
+                if child.name.endswith(".sheet"):
+                    self._load_sheet(child, parent_id)
+                else:
+                    self._load_folder(child, parent_id)
+            elif child.suffix == ".txt":
+                self._load_doc(child, parent_id)
+
+    def _load_folder(self, path: Path, parent_id: str) -> str:
+        item_id = self._next_id()
+        self.items[item_id] = {
+            "id": item_id, "name": path.name,
+            "mimeType": MIME_FOLDER, "parent_id": parent_id,
+        }
+        self._path_map[item_id] = path
+        self._walk(path, item_id)
+        return item_id
+
+    def _load_doc(self, path: Path, parent_id: str) -> str:
+        item_id = self._next_id()
+        self.items[item_id] = {
+            "id": item_id, "name": path.stem,
+            "mimeType": MIME_DOC, "parent_id": parent_id,
+        }
+        self._path_map[item_id] = path
+        self.contents[item_id] = path.read_text(encoding="utf-8")
+        return item_id
+
+    def _load_sheet(self, path: Path, parent_id: str) -> str:
+        item_id = self._next_id()
+        display_name = path.name[:-6]  # strip ".sheet"
+        self.items[item_id] = {
+            "id": item_id, "name": display_name,
+            "mimeType": MIME_SHEET, "parent_id": parent_id,
+        }
+        self._path_map[item_id] = path
+        tabs = {
+            csv.stem: read_csv(csv)
+            for csv in sorted(path.glob("*.csv"))
+        }
+        self.sheets[item_id] = tabs
+        return item_id
+
+    # ── snapshot / restore ───────────────────────────────────────────────────
+
+    def snapshot(self) -> Path:
+        """Copy the entire drive directory to a temp location. Returns the copy path."""
+        tmp = Path(tempfile.mkdtemp(prefix="fake_drive_snap_"))
+        snap = tmp / "snap"
+        shutil.copytree(self.root, snap)
+        return snap
+
+    def restore(self, snap: Path) -> None:
+        """Revert the drive to the snapshot state and rebuild the in-memory index."""
+        # Remove current drive contents (keep the root dir itself)
+        for child in self.root.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        # Copy snapshot back
+        for child in snap.iterdir():
+            dest = self.root / child.name
+            shutil.copytree(child, dest) if child.is_dir() else shutil.copy2(child, dest)
+        shutil.rmtree(snap.parent)  # clean up temp dir
+        # Rebuild in-memory state
+        self.items.clear()
+        self.contents.clear()
+        self.sheets.clear()
+        self._path_map.clear()
+        self._counter = 1000
+        self._load()
+
+    # ── call log ─────────────────────────────────────────────────────────────
+
+    def log_call(self, tool: str, args: dict) -> None:
+        self._call_log.append({"tool": tool, "args": args})
+
+    def get_calls(self, tool: str | None = None) -> list[dict]:
+        return [c for c in self._call_log if not tool or c["tool"] == tool]
+
+    # ── mutation helpers (write-through) ─────────────────────────────────────
+
+    def _parent_path(self, parent_id: str) -> Path:
+        return self._path_map.get(parent_id, self.root)
+
+    def create_folder(self, name: str, parent_id: str) -> dict:
+        path = self._parent_path(parent_id) / name
+        path.mkdir(exist_ok=True)
+        item_id = self._next_id()
+        item = {"id": item_id, "name": name, "mimeType": MIME_FOLDER, "parent_id": parent_id}
+        self.items[item_id] = item
+        self._path_map[item_id] = path
+        return item
+
+    def create_doc(self, name: str, parent_id: str, content: str = "") -> dict:
+        path = self._parent_path(parent_id) / f"{name}.txt"
+        path.write_text(content, encoding="utf-8")
+        item_id = self._next_id()
+        item = {"id": item_id, "name": name, "mimeType": MIME_DOC, "parent_id": parent_id}
+        self.items[item_id] = item
+        self._path_map[item_id] = path
+        self.contents[item_id] = content
+        return item
+
+    def create_sheet(self, name: str, parent_id: str) -> dict:
+        path = self._parent_path(parent_id) / f"{name}.sheet"
+        path.mkdir(exist_ok=True)
+        item_id = self._next_id()
+        item = {"id": item_id, "name": name, "mimeType": MIME_SHEET, "parent_id": parent_id}
+        self.items[item_id] = item
+        self._path_map[item_id] = path
+        self.sheets[item_id] = {}
+        return item
+
+    def write_doc(self, item_id: str, content: str) -> None:
+        self.contents[item_id] = content
+        path = self._path_map.get(item_id)
+        if path:
+            path.write_text(content, encoding="utf-8")
+
+    def write_sheet_tab(self, item_id: str, tab_name: str, rows: list) -> None:
+        self.sheets.setdefault(item_id, {})[tab_name] = rows
+        sheet_path = self._path_map.get(item_id)
+        if sheet_path:
+            write_csv(sheet_path / f"{tab_name}.csv", rows)
+
+    # ── query helpers ─────────────────────────────────────────────────────────
+
+    def find_by_name(self, name: str, mime: str | None = None) -> dict | None:
+        for item in self.items.values():
+            if item["name"] == name and (mime is None or item["mimeType"] == mime):
+                return item
+        return None
+
+
+# ─── output formatter ─────────────────────────────────────────────────────────
+
+def _fmt(item: dict) -> str:
+    return f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]})'
+
+
+# ─── range parser ─────────────────────────────────────────────────────────────
+
+def _col_to_idx(col: str) -> int:
+    r = 0
+    for c in col.upper():
+        r = r * 26 + (ord(c) - ord("A") + 1)
+    return r - 1
+
+
+def _parse_range(range_str: str) -> tuple[str | None, int, int, int | None, int | None]:
+    """'Sheet1!A2:B5' -> (sheet_name, start_row, start_col, end_row, end_col) 0-based."""
+    sheet_name = None
+    if "!" in range_str:
+        sheet_name, range_str = range_str.split("!", 1)
+    m = re.match(r"([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?", range_str)
+    if not m:
+        return sheet_name, 0, 0, None, None
+    sc = _col_to_idx(m.group(1))
+    sr = int(m.group(2)) - 1
+    ec = _col_to_idx(m.group(3)) if m.group(3) else None
+    er = int(m.group(4)) - 1    if m.group(4) else None
+    return sheet_name, sr, sc, er, ec
+
+
+# ─── FakeMCPClient ────────────────────────────────────────────────────────────
+
+_SERVER_ROOT = Path(__file__).resolve().parent.parent / "servers" / "google_workspace_mcp"
+_SERVER_MODULES = ("gdrive.drive_tools", "gdocs.docs_tools", "gsheets.sheets_tools")
+
+
+async def _load_schemas() -> dict[str, Any]:
+    """
+    Import the google_workspace_mcp tool modules and extract JSON schemas
+    directly from the FastMCP server's tool registry.
+    Always up-to-date; no static file to maintain.
+    """
+    import importlib
+    import os
+    import sys
+
+    sys.path.insert(0, str(_SERVER_ROOT))
+    os.environ.setdefault("GOOGLE_CLIENT_ID", "x")
+    os.environ.setdefault("GOOGLE_CLIENT_SECRET", "x")
+
+    from core.server import server  # type: ignore[import]  # resolved via runtime sys.path
+
+    for mod in _SERVER_MODULES:
+        importlib.import_module(mod)
+
+    tools = await server.list_tools()
+    return {t.name: t.parameters for t in tools}
+
+
+class FakeMCPClient:
+    """
+    Drop-in stub for MCPClient.
+    Tool schemas loaded live from the google_workspace_mcp server modules.
+    """
+
+    _SCHEMAS: dict[str, Any] = {}
+
+    def __init__(self, drive: FakeDrive) -> None:
+        self._drive = drive
+
+    @asynccontextmanager
+    async def session(self, *, token: str | None = None):  # noqa: ARG002
+        yield self
+
+    async def list_tools(self, *, token: str | None = None) -> list[dict]:  # noqa: ARG002
+        if not FakeMCPClient._SCHEMAS:
+            FakeMCPClient._SCHEMAS = await _load_schemas()
+        return [{"name": n, "inputSchema": s} for n, s in self._SCHEMAS.items()]
+
+    async def call_tool(self, *, token: str, tool_name: str, arguments: dict) -> str:  # noqa: ARG002
+        self._drive.log_call(tool_name, arguments)
+        print(f"  → {tool_name}  {arguments}", flush=True)
+        handler = getattr(self, f"_tool_{tool_name}", None)
+        if handler is None:
+            result = f"[Fake server] Tool '{tool_name}' is not implemented in the fake MCP."
+        else:
+            result = await handler(**arguments)
+        print(f"     ↳ {result}", flush=True)
+        return result
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Drive tools
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    async def _tool_search_drive_files(
+        self,
+        query: str,
+        page_size: int = 10,
+        file_type: str | None = None,
+        **_,
+    ) -> str:
+        d = self._drive
+        mime_filter = FILE_TYPE_MIME.get(file_type) if file_type else None
+        name_re   = re.search(r"name contains '([^']+)'",    query, re.IGNORECASE)
+        parent_re = re.search(r"'([^']+)'\s+in\s+parents",   query, re.IGNORECASE)
+        full_re   = re.search(r"fullText contains '([^']+)'", query, re.IGNORECASE)
+        results = []
+        for item in d.items.values():
+            if item["id"] == "root":
+                continue
+            if mime_filter and item["mimeType"] != mime_filter:
+                continue
+            if name_re and name_re.group(1).lower() not in item["name"].lower():
+                continue
+            if parent_re and item.get("parent_id") != parent_re.group(1):
+                continue
+            if full_re:
+                text = d.contents.get(item["id"], "")
+                if full_re.group(1).lower() not in text.lower():
+                    continue
+            results.append(item)
+        results = results[:page_size]
+        if not results:
+            return f"No files found for '{query}'."
+        return "\n".join([f"Found {len(results)} files matching '{query}':"] + [_fmt(i) for i in results])
+
+    async def _tool_list_drive_items(
+        self,
+        folder_id: str = "root",
+        page_size: int = 100,
+        file_type: str | None = None,
+        **_,
+    ) -> str:
+        d = self._drive
+        mime_filter = FILE_TYPE_MIME.get(file_type) if file_type else None
+        results = [
+            item for item in d.items.values()
+            if item.get("parent_id") == folder_id
+            and item["id"] != "root"
+            and (mime_filter is None or item["mimeType"] == mime_filter)
+        ][:page_size]
+        if not results:
+            return f"No items found in folder '{folder_id}'."
+        return "\n".join([f"Found {len(results)} items in folder '{folder_id}':"] + [_fmt(i) for i in results])
+
+    async def _tool_get_drive_file_content(self, file_id: str, **_) -> str:
+        item = self._drive.items.get(file_id)
+        if not item:
+            return f"[Tool error] File '{file_id}' not found."
+        content = self._drive.contents.get(file_id, "")
+        return f'File: "{item["name"]}" (ID: {file_id})\n{content}'
+
+    async def _tool_create_drive_file(
+        self,
+        file_name: str,
+        content: str | None = None,
+        folder_id: str = "root",
+        mime_type: str = "text/plain",
+        **_,
+    ) -> str:
+        if mime_type == MIME_SHEET:
+            item = self._drive.create_sheet(file_name, folder_id)
+        else:
+            item = self._drive.create_doc(file_name, folder_id, content or "")
+        return (
+            f"Created file '{file_name}' (ID: {item['id']}) in folder '{folder_id}'. "
+            f"Link: https://docs.example/d/{item['id']}/edit"
+        )
+
+    async def _tool_create_drive_folder(
+        self,
+        folder_name: str,
+        parent_folder_id: str = "root",
+        **_,
+    ) -> str:
+        item = self._drive.create_folder(folder_name, parent_folder_id)
+        return f"Created folder '{folder_name}' (ID: {item['id']}) in folder '{parent_folder_id}'."
+
+    async def _tool_update_drive_file(
+        self,
+        file_id: str,
+        trashed: bool | None = None,
+        name: str | None = None,
+        **_,
+    ) -> str:
+        if trashed is True:
+            return "[Tool error] Deleting or trashing files is not allowed by this server."
+        item = self._drive.items.get(file_id)
+        if not item:
+            return f"[Tool error] File '{file_id}' not found."
+        if name:
+            item["name"] = name
+        return f"Updated file '{item['name']}' (ID: {file_id})."
+
+    async def _tool_copy_drive_file(
+        self,
+        file_id: str,
+        new_name: str | None = None,
+        parent_folder_id: str = "root",
+        **_,
+    ) -> str:
+        item = self._drive.items.get(file_id)
+        if not item:
+            return f"[Tool error] File '{file_id}' not found."
+        copy_name = new_name or f"{item['name']} (copy)"
+        new_item = self._drive.create_doc(
+            copy_name, parent_folder_id, self._drive.contents.get(file_id, "")
+        )
+        return f"Copied '{item['name']}' to '{copy_name}' (ID: {new_item['id']})."
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Drive tools
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    async def _tool_search_docs(self, query: str, page_size: int = 10, **_) -> str:
+        results = [
+            item for item in self._drive.items.values()
+            if item["mimeType"] == MIME_DOC
+            and (
+                query.lower() in item["name"].lower()
+                or query.lower() in self._drive.contents.get(item["id"], "").lower()
+            )
+        ][:page_size]
+        if not results:
+            return f"No docs found for '{query}'."
+        return "\n".join([f"Found {len(results)} docs:"] + [_fmt(i) for i in results])
+
+    async def _tool_start_google_auth(self, service_name: str, **_) -> str:
+        return f"Authentication for '{service_name}' is not required in the fake server."
+
+    async def _tool_get_drive_file_download_url(self, file_id: str, **_) -> str:
+        item = self._drive.items.get(file_id)
+        if not item:
+            return f"[Tool error] File '{file_id}' not found."
+        return f"Download URL for '{item['name']}': https://drive.example/download/{file_id}"
+
+    async def _tool_import_to_google_doc(
+        self,
+        file_name: str,
+        content: str | None = None,
+        folder_id: str = "root",
+        **_,
+    ) -> str:
+        item = self._drive.create_doc(file_name, folder_id, content or "")
+        return (
+            f"Imported '{file_name}' as Google Doc (ID: {item['id']}). "
+            f"Link: https://docs.example/d/{item['id']}/edit"
+        )
+
+    async def _tool_get_drive_file_permissions(self, file_id: str, **_) -> str:
+        item = self._drive.items.get(file_id)
+        if not item:
+            return f"[Tool error] File '{file_id}' not found."
+        return f"Permissions for '{item['name']}' (ID: {file_id}): owner only (fake server)."
+
+    async def _tool_check_drive_file_public_access(self, file_name: str, **_) -> str:
+        item = self._drive.find_by_name(file_name)
+        if not item:
+            return f"File '{file_name}' not found."
+        return f"'{file_name}' is not publicly shared (fake server)."
+
+    async def _tool_get_drive_shareable_link(self, file_id: str, **_) -> str:
+        item = self._drive.items.get(file_id)
+        if not item:
+            return f"[Tool error] File '{file_id}' not found."
+        return f"Shareable link for '{item['name']}': https://drive.example/share/{file_id}"
+
+    async def _tool_share_drive_file(self, file_id: str, **_) -> str:
+        item = self._drive.items.get(file_id)
+        if not item:
+            return f"[Tool error] File '{file_id}' not found."
+        return f"Shared '{item['name']}' (fake server — no actual sharing performed)."
+
+    async def _tool_batch_share_drive_file(self, file_id: str, **_) -> str:
+        return await self._tool_share_drive_file(file_id)
+
+    async def _tool_update_drive_permission(self, file_id: str, permission_id: str, **_) -> str:
+        return f"Updated permission '{permission_id}' on file '{file_id}' (fake server)."
+
+    async def _tool_remove_drive_permission(self, **_) -> str:
+        return "[Tool error] Removing permissions is not allowed by this server."
+
+    async def _tool_transfer_drive_ownership(self, **_) -> str:
+        return "[Tool error] Transferring ownership is not allowed by this server."
+
+    async def _tool_set_drive_file_permissions(self, file_id: str, **_) -> str:
+        return f"Updated file-level permissions for '{file_id}' (fake server)."
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Docs tools
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    async def _tool_get_doc_content(self, document_id: str, **_) -> str:
+        item = self._drive.items.get(document_id)
+        if not item:
+            return f"[Tool error] Document '{document_id}' not found."
+        content = self._drive.contents.get(document_id, "")
+        return f'Document: "{item["name"]}" (ID: {document_id})\n\n{content}'
+
+    async def _tool_list_docs_in_folder(
+        self,
+        folder_id: str = "root",
+        page_size: int = 100,
+        **_,
+    ) -> str:
+        results = [
+            item for item in self._drive.items.values()
+            if item.get("parent_id") == folder_id and item["mimeType"] == MIME_DOC
+        ][:page_size]
+        if not results:
+            return f"No documents found in folder '{folder_id}'."
+        return "\n".join([f"Found {len(results)} docs in '{folder_id}':"] + [_fmt(i) for i in results])
+
+    async def _tool_create_doc(self, title: str, content: str = "", **_) -> str:
+        item = self._drive.create_doc(title, "root", content)
+        return (
+            f"Created Google Doc '{title}' (ID: {item['id']}). "
+            f"Link: https://docs.example/d/{item['id']}/edit"
+        )
+
+    async def _tool_inspect_doc_structure(self, document_id: str, **_) -> str:
+        item = self._drive.items.get(document_id)
+        if not item:
+            return f"[Tool error] Document '{document_id}' not found."
+        content = self._drive.contents.get(document_id, "")
+        result = {
+            "total_length": max(1, len(content)),
+            "tables": 0,
+            "statistics": {"elements": content.count("\n") + 1},
+        }
+        return (
+            f"Document structure analysis for {document_id}:\n\n"
+            f"{json.dumps(result, indent=2)}\n\n"
+            f"Link: https://docs.example/d/{document_id}/edit"
+        )
+
+    async def _tool_modify_doc_text(
+        self,
+        document_id: str,
+        start_index: int,
+        end_index: int | None = None,
+        text: str | None = None,
+        **_,
+    ) -> str:
+        item = self._drive.items.get(document_id)
+        if not item:
+            return f"[Tool error] Document '{document_id}' not found."
+        if text is None:
+            return f"Applied formatting to document {document_id}."
+        content = self._drive.contents.get(document_id, "")
+        if end_index is not None and end_index > start_index:
+            # Reject full-document replacement
+            if start_index <= 1 and end_index >= len(content) - 1 and len(content) > 10:
+                return (
+                    "[Tool error] Replacing the entire document content is not allowed. "
+                    "Append or modify specific parts only."
+                )
+            new_content = content[:start_index] + text + content[end_index:]
+        else:
+            new_content = content + text if start_index >= len(content) else content[:start_index] + text + content[start_index:]
+        self._drive.write_doc(document_id, new_content)
+        return (
+            f"Inserted text at index {start_index} in document {document_id}. "
+            f"Text length: {len(text)} characters. "
+            f"Link: https://docs.example/d/{document_id}/edit"
+        )
+
+    async def _tool_find_and_replace_doc(
+        self,
+        document_id: str,
+        find_text: str,
+        replace_text: str,
+        match_case: bool = False,
+        **_,
+    ) -> str:
+        item = self._drive.items.get(document_id)
+        if not item:
+            return f"[Tool error] Document '{document_id}' not found."
+        content = self._drive.contents.get(document_id, "")
+        flags = 0 if match_case else re.IGNORECASE
+        count = len(re.findall(re.escape(find_text), content, flags=flags))
+        new_content = re.sub(re.escape(find_text), replace_text, content, flags=flags)
+        self._drive.write_doc(document_id, new_content)
+        return f"Replaced {count} occurrence(s) of '{find_text}' in document {document_id}."
+
+    async def _tool_insert_doc_elements(
+        self,
+        document_id: str,
+        element_type: str,
+        index: int,
+        rows: int | None = None,
+        columns: int | None = None,
+        list_type: str | None = None,
+        text: str | None = None,
+        **_,
+    ) -> str:
+        """Inserts structural elements like tables, lists, or page breaks into a Google Doc."""
+        item = self._drive.items.get(document_id)
+        if not item:
+            return f"[Tool error] Document '{document_id}' not found."
+        content = self._drive.contents.get(document_id, "")
+
+        if element_type == "table":
+            if not rows or not columns:
+                return "Error: 'rows' and 'columns' parameters are required for table insertion."
+            placeholder = "\n" + "\n".join(
+                "\t".join([""] * columns) for _ in range(rows)
+            ) + "\n"
+            insert_at = min(index, len(content))
+            new_content = content[:insert_at] + placeholder + content[insert_at:]
+            description = f"table ({rows}x{columns})"
+        elif element_type == "list":
+            if not list_type:
+                return "Error: 'list_type' parameter is required for list insertion ('UNORDERED' or 'ORDERED')."
+            item_text = text or "List item"
+            insert_at = min(index, len(content))
+            new_content = content[:insert_at] + f"\n• {item_text}\n" + content[insert_at:]
+            description = f"{list_type.lower()} list"
+        elif element_type == "page_break":
+            insert_at = min(index, len(content))
+            new_content = content[:insert_at] + "\n---page-break---\n" + content[insert_at:]
+            description = "page break"
+        elif element_type == "paragraph" or text is not None:
+            # LLMs sometimes call this with element_type="paragraph" to insert text
+            insert_at = len(content) if index >= len(content) else index
+            new_content = content[:insert_at] + (text or "") + content[insert_at:]
+            description = "paragraph"
+        else:
+            return f"Error: Unsupported element type '{element_type}'. Supported: 'table', 'list', 'page_break'."
+
+        self._drive.write_doc(document_id, new_content)
+        link = f"https://docs.example/d/{document_id}/edit"
+        return f"Inserted {description} at index {index} in document {document_id}. Link: {link}"
+
+    async def _tool_insert_doc_image(self, document_id: str, image_source: str, index: int, **_) -> str:
+        item = self._drive.items.get(document_id)
+        if not item:
+            return f"[Tool error] Document '{document_id}' not found."
+        return f"Inserted image from '{image_source}' at index {index} in document {document_id} (fake server)."
+
+    async def _tool_update_doc_headers_footers(
+        self, document_id: str, section_type: str, **_
+    ) -> str:
+        item = self._drive.items.get(document_id)
+        if not item:
+            return f"[Tool error] Document '{document_id}' not found."
+        return f"Updated {section_type} in document {document_id} (fake server)."
+
+    async def _tool_batch_update_doc(self, document_id: str, operations: list, **_) -> str:
+        item = self._drive.items.get(document_id)
+        if not item:
+            return f"[Tool error] Document '{document_id}' not found."
+        content = self._drive.contents.get(document_id, "")
+        for op in operations:
+            insert = op.get("insertText")
+            if insert:
+                idx = insert.get("location", {}).get("index", len(content))
+                t   = insert.get("text", "")
+                content = content + t if idx >= len(content) else content[:idx] + t + content[idx:]
+        self._drive.write_doc(document_id, content)
+        return f"Applied {len(operations)} batch operation(s) to document {document_id}."
+
+    async def _tool_create_table_with_data(
+        self, document_id: str, table_data: list, index: int, **_
+    ) -> str:
+        item = self._drive.items.get(document_id)
+        if not item:
+            return f"[Tool error] Document '{document_id}' not found."
+        rows = len(table_data)
+        cols = max((len(r) for r in table_data), default=0)
+        content = self._drive.contents.get(document_id, "")
+        placeholder = "\n" + "\n".join("\t".join(row) for row in table_data) + "\n"
+        insert_at = min(index, len(content))
+        self._drive.write_doc(document_id, content[:insert_at] + placeholder + content[insert_at:])
+        link = f"https://docs.example/d/{document_id}/edit"
+        return f"Created table ({rows}x{cols}) at index {index} in document {document_id}. Link: {link}"
+
+    async def _tool_debug_table_structure(self, document_id: str, table_index: int = 0, **_) -> str:
+        item = self._drive.items.get(document_id)
+        if not item:
+            return f"[Tool error] Document '{document_id}' not found."
+        return json.dumps({"error": "No tables in fake document", "table_index": table_index})
+
+    async def _tool_export_doc_to_pdf(self, document_id: str, **_) -> str:
+        item = self._drive.items.get(document_id)
+        if not item:
+            return f"[Tool error] Document '{document_id}' not found."
+        return f"Exported '{item['name']}' to PDF (fake server — no file created)."
+
+    async def _tool_update_paragraph_style(
+        self, document_id: str, start_index: int, end_index: int, **_
+    ) -> str:
+        item = self._drive.items.get(document_id)
+        if not item:
+            return f"[Tool error] Document '{document_id}' not found."
+        return f"Applied paragraph style to range {start_index}:{end_index} in document {document_id}."
+
+    async def _tool_get_doc_as_markdown(self, document_id: str, **_) -> str:
+        return await self._tool_get_doc_content(document_id)
+
+    async def _tool_read_document_comments(self, document_id: str, **_) -> str:
+        return f"No comments found in document '{document_id}' (fake server)."
+
+    async def _tool_create_document_comment(self, document_id: str, comment_content: str, **_) -> str:
+        return f"Created comment on document '{document_id}': {comment_content!r} (fake server)."
+
+    async def _tool_reply_to_document_comment(self, document_id: str, comment_id: str, **_) -> str:
+        return f"Replied to comment '{comment_id}' in document '{document_id}' (fake server)."
+
+    async def _tool_resolve_document_comment(self, document_id: str, comment_id: str, **_) -> str:
+        return f"Resolved comment '{comment_id}' in document '{document_id}' (fake server)."
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Sheets tools
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    async def _tool_list_spreadsheets(self, max_results: int = 25, **_) -> str:
+        sheets = [
+            i for i in self._drive.items.values() if i["mimeType"] == MIME_SHEET
+        ][:max_results]
+        if not sheets:
+            return "No spreadsheets found."
+        return "\n".join(
+            [f"Successfully listed {len(sheets)} spreadsheets:"]
+            + [f'- "{s["name"]}" (ID: {s["id"]})' for s in sheets]
+        )
+
+    async def _tool_get_spreadsheet_info(self, spreadsheet_id: str, **_) -> str:
+        item = self._drive.items.get(spreadsheet_id)
+        if not item:
+            return f"[Tool error] Spreadsheet '{spreadsheet_id}' not found."
+        sheet_names = list(self._drive.sheets.get(spreadsheet_id, {}).keys())
+        return f'Spreadsheet: "{item["name"]}" (ID: {spreadsheet_id})\nSheets: {sheet_names}'
+
+    def _resolve_sheet(
+        self, spreadsheet_id: str, sheet_name: str | None
+    ) -> tuple[dict | None, str, list]:
+        item = self._drive.items.get(spreadsheet_id)
+        if not item:
+            return None, "", []
+        sheet_data = self._drive.sheets.setdefault(spreadsheet_id, {})
+        if not sheet_name:
+            sheet_name = next(iter(sheet_data), "Sheet1")
+        rows = sheet_data.setdefault(sheet_name, [])
+        return item, sheet_name, rows
+
+    async def _tool_read_sheet_values(
+        self,
+        spreadsheet_id: str,
+        range_name: str = "A1:Z1000",
+        **_,
+    ) -> str:
+        sn, sr, _, er, _ = _parse_range(range_name)
+        item, _, rows = self._resolve_sheet(spreadsheet_id, sn)
+        if item is None:
+            return f"[Tool error] Spreadsheet '{spreadsheet_id}' not found."
+        r_end   = (er + 1) if er is not None else len(rows)
+        visible = rows[sr:r_end]
+        if not visible:
+            return f"No data found in range '{range_name}' in spreadsheet {spreadsheet_id}."
+        formatted = "\n".join(f"Row {sr + i + 1:2d}: {row}" for i, row in enumerate(visible))
+        return (
+            f"Successfully read {len(visible)} rows from range '{range_name}' "
+            f"in spreadsheet {spreadsheet_id}:\n{formatted}"
+        )
+
+    async def _tool_modify_sheet_values(
+        self,
+        spreadsheet_id: str,
+        range_name: str,
+        values: Any = None,
+        clear_values: bool = False,
+        **_,
+    ) -> str:
+        sn, sr, sc, _, _ = _parse_range(range_name)
+        item, sheet_name, rows = self._resolve_sheet(spreadsheet_id, sn)
+        if item is None:
+            return f"[Tool error] Spreadsheet '{spreadsheet_id}' not found."
+        if clear_values:
+            self._drive.write_sheet_tab(spreadsheet_id, sheet_name, [])
+            return f"Cleared range '{range_name}' in spreadsheet {spreadsheet_id}."
+        if isinstance(values, str):
+            values = json.loads(values)
+        if not values:
+            return "[Tool error] No values provided."
+        for ri, row in enumerate(values):
+            abs_row = sr + ri
+            while len(rows) <= abs_row:
+                rows.append([])
+            cur = rows[abs_row]
+            for ci, val in enumerate(row):
+                abs_col = sc + ci
+                while len(cur) <= abs_col:
+                    cur.append("")
+                cur[abs_col] = val
+        self._drive.write_sheet_tab(spreadsheet_id, sheet_name, rows)
+        total_cells = sum(len(r) for r in values)
+        return (
+            f"Successfully updated range '{range_name}' in spreadsheet {spreadsheet_id}. "
+            f"Updated: {total_cells} cells, {len(values)} rows."
+        )
+
+    async def _tool_format_sheet_range(self, spreadsheet_id: str, range_name: str, **_) -> str:
+        item = self._drive.items.get(spreadsheet_id)
+        if not item:
+            return f"[Tool error] Spreadsheet '{spreadsheet_id}' not found."
+        return f"Applied formatting to range '{range_name}' in spreadsheet {spreadsheet_id} (fake server)."
+
+    async def _tool_add_conditional_formatting(self, spreadsheet_id: str, **_) -> str:
+        return f"Added conditional formatting to spreadsheet '{spreadsheet_id}' (fake server)."
+
+    async def _tool_update_conditional_formatting(self, spreadsheet_id: str, **_) -> str:
+        return f"Updated conditional formatting in spreadsheet '{spreadsheet_id}' (fake server)."
+
+    async def _tool_delete_conditional_formatting(self, spreadsheet_id: str, **_) -> str:
+        return f"Deleted conditional formatting in spreadsheet '{spreadsheet_id}' (fake server)."
+
+    async def _tool_create_spreadsheet(
+        self,
+        title: str,
+        sheet_names: list | None = None,
+        **_,
+    ) -> str:
+        """Creates a new Google Spreadsheet."""
+        item = self._drive.create_sheet(title, "root")
+        if sheet_names:
+            for name in sheet_names:
+                self._drive.sheets.setdefault(item["id"], {})[name] = []
+        else:
+            self._drive.sheets.setdefault(item["id"], {})["Sheet1"] = []
+        spreadsheet_url = f"https://sheets.example/d/{item['id']}/edit"
+        return (
+            f"Successfully created spreadsheet '{title}' for user. "
+            f"ID: {item['id']} | URL: {spreadsheet_url} | Locale: en_US"
+        )
+
+    async def _tool_create_sheet(self, spreadsheet_id: str, sheet_name: str, **_) -> str:
+        """Creates a new sheet within an existing spreadsheet."""
+        item = self._drive.items.get(spreadsheet_id)
+        if not item:
+            return f"[Tool error] Spreadsheet '{spreadsheet_id}' not found."
+        self._drive.sheets.setdefault(spreadsheet_id, {})[sheet_name] = []
+        sheet_path = self._drive._path_map.get(spreadsheet_id)
+        if sheet_path:
+            (sheet_path / f"{sheet_name}.csv").write_text("", encoding="utf-8")
+        return f"Successfully created sheet '{sheet_name}' in spreadsheet '{item['name']}' (ID: {spreadsheet_id})."
+
+    async def _tool_read_spreadsheet_comments(self, spreadsheet_id: str, **_) -> str:
+        return f"No comments found in spreadsheet '{spreadsheet_id}' (fake server)."
+
+    async def _tool_create_spreadsheet_comment(self, spreadsheet_id: str, **_) -> str:
+        return f"Created comment on spreadsheet '{spreadsheet_id}' (fake server)."
+
+    async def _tool_reply_to_spreadsheet_comment(self, spreadsheet_id: str, comment_id: str, **_) -> str:
+        return f"Replied to comment '{comment_id}' in spreadsheet '{spreadsheet_id}' (fake server)."
+
+    async def _tool_resolve_spreadsheet_comment(self, spreadsheet_id: str, comment_id: str, **_) -> str:
+        return f"Resolved comment '{comment_id}' in spreadsheet '{spreadsheet_id}' (fake server)."

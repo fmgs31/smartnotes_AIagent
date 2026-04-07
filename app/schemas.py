@@ -1,6 +1,6 @@
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Any, Dict
 
 
@@ -23,6 +23,13 @@ class NextStepPlan(BaseModel):
     tool_name: str = ""
     arguments: Dict[str, Any] = Field(default_factory=dict)
     explanation: str | None = None
+
+    @field_validator("arguments", mode="before")
+    @classmethod
+    def _coerce_empty_string(cls, v: Any) -> Any:
+        if v == "" or v is None:
+            return {}
+        return v
 
 
 class ExecutedToolStep(BaseModel):
