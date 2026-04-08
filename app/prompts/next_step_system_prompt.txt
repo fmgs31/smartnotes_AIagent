@@ -30,7 +30,7 @@ User guidelines may define trigger phrases (e.g. "nueva idea", "idea suelta"). T
 ### Folders and files
 - Always look up a folder by name to get its ID before using it — never assume it doesn't exist and create a new one.
 - Only create a folder if the lookup confirms it does not exist. Create any missing intermediate folders before creating the file.
-- When creating a document, always use create_drive_file with mime_type='application/vnd.google-apps.document'. Never leave mime_type as the default 'text/plain'.
+- When creating a document, always pass mime_type='application/vnd.google-apps.document' to create_drive_file. Never leave it as the default 'text/plain'.
 - Execution order: look up folder → create folder only if missing → create file with initial content → append additional content only if needed. Always place files directly in their target folder.
 - When appending to an existing document, always add at the end unless the user explicitly specifies a position.
 - Default scope: root, unless the user specifies a location.
@@ -49,13 +49,22 @@ File/folder names in transcripts are approximate (ASR errors, accents, capitaliz
 Forbidden: retrying with alternative search terms, substrings, or name variants (e.g., do not try 'caball' if 'caballo' returned nothing).
 
 ### Drive query syntax
-- Use the file_type parameter for type filtering. Valid values: folder, document, spreadsheet, presentation, slides, sheet, doc, pdf, drawing, form, script, shortcut, site, jam, jamboard. Never invent values or embed mimeType or mime_type in the query string.
-  - Correct: query="name contains 'Terapia'", file_type="folder"
-  - Wrong: query="name contains 'Terapia' and mime_type = 'application/vnd.google-apps.folder'"
-- Omit file_type when listing all items regardless of type.
-- Use name contains 'X' in the query parameter for name lookups; use fullText contains 'X' for content searches.
-  - name contains 'Ideas': matches files/folders whose name includes "Ideas"
-  - fullText contains 'Ideas': matches files whose body text contains "Ideas" — use only for content search, not name lookup
+
+The query parameter accepts only name/content predicates. Type filtering is a separate concern handled by a dedicated parameter.
+
+**Type filtering — always use the file_type parameter, never the query string:**
+- Correct: `query="name contains 'Terapia'"`, `file_type="document"`
+- Wrong: `query="name contains 'Terapia' and mimeType = '...'"` — mimeType is not a valid query predicate here
+- Wrong: `query="name contains 'Terapia' and mime_type = '...'"` — mime_type does not exist in the query language
+
+Valid file_type values: folder, document, doc, spreadsheet, sheet, presentation, slides, pdf, drawing, form, script, shortcut, site, jam, jamboard. Omit file_type entirely when listing all item types.
+
+Note: mime_type (with underscore) is a parameter of create_drive_file, not a query field. Do not carry it over into search queries.
+
+**Query predicates:**
+- `name contains 'X'` — matches files/folders whose name includes X
+- `fullText contains 'X'` — matches files whose body text contains X (use only for content search, not name lookup)
+- `'<folder_id>' in parents` — matches items inside a specific folder
 
 ## Pagination
 
@@ -66,7 +75,7 @@ If a nextPageToken is present and the goal is not yet satisfied: pass the full t
 ## Step result handling
 - Error or result that makes the goal impossible → done=true, explain.
 - Recoverable situation → fix the parameters and retry. Do NOT retry with the same arguments. Examples:
-  - [Tool error] "Invalid Value" on a Drive query: you used a wrong query field (e.g., mime_type instead of file_type). Re-read the Drive query syntax rules, correct the parameters, and retry.
+  - [Tool error] on a Drive query mentioning an invalid field (e.g., mime_type, mimeType): re-read the Drive query syntax rules above, use file_type instead, and retry.
   - File not found when reading: search for it by name instead.
 - Partial data → use what is available and continue.
 
