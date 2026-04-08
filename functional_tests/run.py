@@ -144,18 +144,18 @@ async def main() -> None:
             print(f"  ✓  PASSED  ({elapsed:.1f}s)")
             passed += 1
         except AssertionError as exc:
+            import traceback
             elapsed = time.perf_counter() - t0
             print(f"  ✗  FAILED  ({elapsed:.1f}s)")
-            print(f"     {exc}")
+            traceback.print_exc()
             _print_call_log(drive)
             failed += 1
         except Exception as exc:
+            import traceback
             elapsed = time.perf_counter() - t0
             print(f"  !  ERROR   ({elapsed:.1f}s)  {type(exc).__name__}: {exc}")
+            traceback.print_exc()
             _print_call_log(drive)
-            if args.verbose:
-                import traceback
-                traceback.print_exc()
             errored += 1
 
     total = passed + failed + errored

@@ -282,7 +282,7 @@ async def _load_schemas() -> dict[str, Any]:
         importlib.import_module(mod)
 
     tools = await server.list_tools()
-    return {t.name: t.parameters for t in tools}
+    return {t.name: {"description": t.description, "parameters": t.parameters} for t in tools}
 
 
 class FakeMCPClient:
@@ -303,7 +303,7 @@ class FakeMCPClient:
     async def list_tools(self, *, token: str | None = None) -> list[dict]:  # noqa: ARG002
         if not FakeMCPClient._SCHEMAS:
             FakeMCPClient._SCHEMAS = await _load_schemas()
-        return [{"name": n, "inputSchema": s} for n, s in self._SCHEMAS.items()]
+        return [{"name": n, "description": s["description"], "inputSchema": s["parameters"]} for n, s in self._SCHEMAS.items()]
 
     async def call_tool(self, *, token: str, tool_name: str, arguments: dict) -> str:  # noqa: ARG002
         self._drive.log_call(tool_name, arguments)
@@ -320,6 +320,12 @@ class FakeMCPClient:
     # Drive tools
     # ═══════════════════════════════════════════════════════════════════════════
 
+    # Valid field names in the Drive query language
+    _VALID_QUERY_FIELDS = {
+        "name", "mimeType", "fullText", "trashed", "starred",
+        "parents", "owners", "modifiedTime", "createdTime", "sharedWithMe",
+    }
+
     async def _tool_search_drive_files(
         self,
         query: str,
@@ -327,6 +333,15 @@ class FakeMCPClient:
         file_type: str | None = None,
         **_,
     ) -> str:
+        # Reject queries using invalid field names (e.g. mime_type instead of mimeType)
+        found_fields = re.findall(r'\b([a-zA-Z_]+)\b(?=\s*(?:contains|=|!=|<|>))', query)
+        invalid = [f for f in found_fields if f not in self._VALID_QUERY_FIELDS]
+        if invalid:
+            return (
+                f"[Tool error] Invalid Drive query syntax: unknown field(s) {invalid}. "
+                f"Drive query language uses camelCase fields (e.g. 'mimeType', not 'mime_type'). "
+                f"Query was: {query!r}"
+            )
         d = self._drive
         mime_filter = FILE_TYPE_MIME.get(file_type) if file_type else None
         name_re   = re.search(r"name contains '([^']+)'",    query, re.IGNORECASE)

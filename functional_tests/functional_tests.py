@@ -6,6 +6,7 @@ It should raise AssertionError on failure, any other Exception on error.
 The test must restore drive state via snapshot/restore itself.
 """
 import os
+import re
 from dataclasses import dataclass
 from typing import Callable, Awaitable
 
@@ -327,6 +328,52 @@ async def test_safety_no_full_replace(agent: TestAgent, drive: FakeDrive) -> Non
         drive.restore(snap)
 
 
+async def test_read_terapia_first_line(agent: TestAgent, drive: FakeDrive) -> None:
+    """
+    Read-only question about the Terapia document.
+    The agent must locate the doc and return its content without modifying anything.
+    Covers a regression where the LLM used invalid Drive query syntax
+    (e.g. 'mime_type =' instead of 'mimeType =') causing API 400 errors.
+    """
+    snap = drive.snapshot()
+    ids_before = set(drive.items.keys())
+    terapia_content_before = drive.contents.get(
+        drive.find_by_name("Terapia", MIME_DOC)["id"], ""
+    )
+    try:
+        summary = await run_agent(
+            agent, drive,
+            "¿Cuál es la primera línea del documento Terapia en la carpeta Terapia-Autoanálisis?",
+        )
+
+        first_line = TERAPIA_INITIAL_CONTENT.split("\n")[0]
+        assert first_line in summary, (
+            f"First line '{first_line}' not found in summary.\nsummary={repr(summary)}"
+        )
+
+        # Agent must not have used invalid Drive query syntax at any point
+        bad_calls = [
+            c for c in drive.get_calls("search_drive_files")
+            if re.search(r'\bmime_type\b', c["args"].get("query", ""))
+        ]
+        assert not bad_calls, (
+            f"Agent used invalid Drive query syntax 'mime_type =' (should be 'mimeType ='):\n"
+            + "\n".join(f"  {c['args']['query']}" for c in bad_calls)
+        )
+
+        # Nothing should have been created or modified
+        new_items = _new_items(drive, ids_before)
+        assert not new_items, f"Agent created items during a read-only query: {[i['name'] for i in new_items]}"
+
+        terapia = drive.find_by_name("Terapia", MIME_DOC)
+        assert drive.contents.get(terapia["id"]) == terapia_content_before, (
+            "Terapia content was modified during a read-only query."
+        )
+        print(f"    summary: {summary[:200]}")
+    finally:
+        drive.restore(snap)
+
+
 # ─── Registry ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -371,5 +418,10 @@ ALL_TESTS: list[TestCase] = [
         "safety_no_full_replace",
         test_safety_no_full_replace,
         "Safety: full content replacement must be refused / original preserved",
+    ),
+    TestCase(
+        "read_terapia_first_line",
+        test_read_terapia_first_line,
+        "Read-only query → agent returns doc first line without modifying anything",
     ),
 ]

@@ -40,7 +40,11 @@ class TestFakeDriveLoading:
 
     def test_top_level_folders_loaded(self, drive):
         names = {v["name"] for v in drive.items.values()}
-        for expected in ("Ideas Sueltas", "Terapia-Autoanálisis", "Cuentos", "PrototipoJuego"):
+        for expected in (
+            "Ideas Sueltas", "Terapia-Autoanálisis", "Cuentos", "PrototipoJuego",
+            "Trabajo", "Finanzas", "Viajes", "Libros", "Recetas",
+            "Fotografías", "Proyectos Personales", "Salud", "Música", "Cursos",
+        ):
             assert expected in names
 
     def test_consciencia_subfolder_loaded(self, drive):
@@ -312,6 +316,23 @@ class TestFakeMCPClientDispatch:
         assert "updated" in result.lower()
         rows = drive.sheets[sheet["id"]]["Ideas suelta 1"]
         assert rows[2] == ["nueva idea"]
+
+    async def test_search_drive_files_rejects_invalid_field_name(self, client, drive):
+        # mime_type (underscore) is invalid — Drive uses mimeType (camelCase)
+        result = await self._call(
+            client, "search_drive_files",
+            query="name contains 'Terapia' and mime_type = 'application/vnd.google-apps.document'",
+        )
+        assert "[Tool error]" in result
+        assert "mime_type" in result
+
+    async def test_search_drive_files_accepts_valid_mimeType(self, client, drive):
+        result = await self._call(
+            client, "search_drive_files",
+            query="name contains 'Terapia' and mimeType = 'application/vnd.google-apps.document'",
+        )
+        assert "[Tool error]" not in result
+        assert "Terapia" in result
 
     async def test_unknown_tool_returns_message(self, client, drive):
         result = await self._call(client, "nonexistent_tool")
