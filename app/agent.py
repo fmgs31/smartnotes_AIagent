@@ -354,10 +354,12 @@ class Agent:
                 discovered_tools = list(tools_with_schema.keys())
 
                 configured_allowed = set(server.allowed_tools) if server.allowed_tools is not None else None
+                blocked = set(server.blocked_tools)
                 effective_tools = [
                     tool_name
                     for tool_name in discovered_tools
-                    if configured_allowed is None or tool_name in configured_allowed
+                    if (configured_allowed is None or tool_name in configured_allowed)
+                    and tool_name not in blocked
                 ]
 
                 for tool_name in effective_tools:

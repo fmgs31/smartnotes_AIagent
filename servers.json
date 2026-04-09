@@ -1,8 +1,11 @@
-﻿{
+{
     "servers": [
         {
             "id": "google-workspace",
-            "url": "http://localhost:8000/mcp/"
+            "url": "http://localhost:8000/mcp/",
+            "blocked_tools": [
+                "import_to_google_doc"
+            ]
         }
     ]
 }

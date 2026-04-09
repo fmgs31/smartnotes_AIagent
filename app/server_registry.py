@@ -9,6 +9,7 @@ class ServerConfig:
     id: str
     url: str
     allowed_tools: list[str] | None = None
+    blocked_tools: tuple[str, ...] = ()
 
 
 class ServerRegistry:
@@ -37,12 +38,21 @@ class ServerRegistry:
                 if not isinstance(allowed_tools, list) or not all(isinstance(t, str) and t for t in allowed_tools):
                     raise ValueError(f"Server '{sid}' has invalid allowed_tools; expected non-empty strings")
 
+            blocked_tools = s.get("blocked_tools", [])
+            if not isinstance(blocked_tools, list) or not all(isinstance(t, str) and t for t in blocked_tools):
+                raise ValueError(f"Server '{sid}' has invalid blocked_tools; expected non-empty strings")
+
             # Allow the URL to be overridden at runtime via an env var.
             # Convention: server id "google-workspace" → env var GOOGLE_WORKSPACE_URL
             env_key = sid.upper().replace("-", "_") + "_URL"
             url = os.environ.get(env_key) or url
 
-            servers[sid] = ServerConfig(id=sid, url=url, allowed_tools=allowed_tools)
+            servers[sid] = ServerConfig(
+                id=sid,
+                url=url,
+                allowed_tools=allowed_tools,
+                blocked_tools=tuple(blocked_tools),
+            )
 
         return cls(servers=servers)
 

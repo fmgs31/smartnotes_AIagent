@@ -35,6 +35,7 @@ class TestAgent(Agent):
             "google-workspace": ServerConfig(
                 id="google-workspace",
                 url="http://fake-mcp-does-not-exist/",
+                blocked_tools=("import_to_google_doc",),
             )
         })
         super().__init__(registry=registry, planner=planner, max_plan_steps=max_plan_steps)
