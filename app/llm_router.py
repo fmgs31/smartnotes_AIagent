@@ -85,7 +85,7 @@ class Planner:
             f"{schemas_json}"
         )
 
-        log.info(f"Planning next step: remaining_steps={remaining_steps}, executed_steps={len(executed_steps or [])}")
+        log.info(f"Calling LLM now: Planning next step: remaining_steps={remaining_steps}, executed_steps={len(executed_steps or [])}")
 
         t0 = time.perf_counter()
         resp = await self._client.responses.create(

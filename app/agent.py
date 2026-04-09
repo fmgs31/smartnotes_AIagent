@@ -116,6 +116,7 @@ class Agent:
                     had_plan = True
                 elif isinstance(obj, ExecutedToolStep):
                     steps.append(obj)
+                log.info("")
             if not had_plan:
                 break
 
@@ -231,6 +232,7 @@ class Agent:
         )
 
         if next_step.done:
+            log.info("Step=%s done=true  rationale: %s", step_idx, next_step.explanation or "")
             return
         else:
             yield next_step
@@ -247,19 +249,22 @@ class Agent:
         """Resolve and call the tool chosen by the planner. Returns the executed step."""
         tool_name = next_step.tool_name
         arguments = next_step.arguments or {}
+        rationale = next_step.explanation or ""
         try:
             server, real_tool_name = self._resolve_tool(tool_name, arguments, seen_signatures)
         except ValueError as exc:
-            log.warning("Step=%s resolve failed: %s — tool=%s args=%s", step_idx, exc, tool_name, arguments)
+            log.warning(
+                "Step=%s BLOCKED — %s\n  rationale: %s\n  tool: %s\n  args: %s",
+                step_idx, exc, rationale, tool_name, arguments,
+            )
             result = f"[Agent error] {exc}"
             server_id = ""
         else:
             server_id = server.id
             log.info(
-                "Step=%s Server=%s ToolId=%s Tool=%s",
-                step_idx, server.id, tool_name, real_tool_name,
+                "Step=%s → %s  args=%s\n  rationale: %s",
+                step_idx, tool_name, arguments, rationale,
             )
-            log.info("Planner rationale: %s", str(next_step.explanation))
             try:
                 result = await self._call_tool(step_idx, server, real_tool_name, arguments, request_ctxt)
             except Exception as exc:
@@ -267,7 +272,7 @@ class Agent:
                 result = f"[Tool error] {exc}"
 
         result_summary = self._cap_result(result)
-        log.debug("Step=%s result_summary: %s", step_idx, result_summary)
+        log.info("Result step=%s ↳ %s", step_idx, result_summary)
 
         planning_context.append({
             "step": step_idx,
@@ -322,8 +327,7 @@ class Agent:
             arguments=arguments,
         )
         result = self._extract_result_text(raw)
-        log.info("Step=%s tool call took %.2fs result_len=%s", step_idx, time.perf_counter() - t0, len(result))
-        log.debug(f"\n -------------\nMCP SERVER RESULT: {result}\n -------------")
+        log.debug("Step=%s took %.2fs result_len=%s", step_idx, time.perf_counter() - t0, len(result))
         return result
 
     async def _ensure_tools_discovered(self, request_ctxt: _RequestContext) -> None:
