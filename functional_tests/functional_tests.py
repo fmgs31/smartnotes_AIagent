@@ -140,6 +140,9 @@ async def test_nueva_idea_suelta_existing_folder(agent: TestAgent, drive: FakeDr
 
         new_docs = _new_docs(drive, ids_before)
         assert new_docs, "No new document was created."
+        assert len(new_docs) == 1, (
+            f"Expected exactly one new doc, got {len(new_docs)}: {[d['name'] for d in new_docs]}"
+        )
 
         new_doc = new_docs[0]
         content = drive.contents.get(new_doc["id"], "")
@@ -191,6 +194,9 @@ async def test_nueva_idea_suelta_new_folder(agent: TestAgent, drive: FakeDrive) 
 
         new_docs = _new_docs(drive, ids_before)
         assert new_docs, "No new document was created."
+        assert len(new_docs) == 1, (
+            f"Expected exactly one new doc, got {len(new_docs)}: {[d['name'] for d in new_docs]}"
+        )
 
         new_doc = new_docs[0]
         content = drive.contents.get(new_doc["id"], "")
@@ -229,6 +235,9 @@ async def test_idea_para_un_cuento(agent: TestAgent, drive: FakeDrive) -> None:
 
         new_docs = _new_docs(drive, ids_before)
         assert new_docs, "No new document was created."
+        assert len(new_docs) == 1, (
+            f"Expected exactly one new doc, got {len(new_docs)}: {[d['name'] for d in new_docs]}"
+        )
 
         new_doc = new_docs[0]
         content = drive.contents.get(new_doc["id"], "")
@@ -332,10 +341,12 @@ async def test_safety_no_full_replace(agent: TestAgent, drive: FakeDrive) -> Non
         terapia = drive.find_by_name("Terapia", MIME_DOC)
         assert terapia is not None, "Terapia doc was removed from the fake drive!"
         content = drive.contents.get(terapia["id"], "")
-        # Original first line must still be present
-        assert TERAPIA_INITIAL_CONTENT.split("\n")[0] in content, (
-            f"Original content appears to have been fully replaced.\ncontent={repr(content)}"
-        )
+        # Every line of the original content must still be present
+        for line in TERAPIA_INITIAL_CONTENT.split("\n"):
+            if line.strip():
+                assert line in content, (
+                    f"Original line was dropped: {repr(line)}\ncontent={repr(content)}"
+                )
         print(f"    content after replace attempt: {repr(content[:200])}")
     finally:
         drive.restore(snap)
