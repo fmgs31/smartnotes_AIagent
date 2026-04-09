@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from datetime import date
 from pathlib import Path
 
 from openai import AsyncOpenAI
@@ -75,6 +76,7 @@ class Planner:
         drive_items_section = f"Known Drive items:\n{items_str}\n\n" if items_str else ""
         guidelines_section = f"User guidelines:\n{user_guidelines}\n\n" if user_guidelines else ""
         user = (
+            f"Current date: {date.today().isoformat()}\n\n"
             f"User request:\n{text}\n\n"
             f"{drive_items_section}"
             f"{guidelines_section}"
