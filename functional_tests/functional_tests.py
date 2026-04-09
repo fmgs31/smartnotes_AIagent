@@ -259,6 +259,8 @@ async def test_idea_juego_de_mesa(agent: TestAgent, drive: FakeDrive) -> None:
     'Ideas suelta 1' tab in the 'Prototipo Juego' spreadsheet.
     """
     snap = drive.snapshot()
+    sheet_before = drive.find_by_name("Prototipo Juego")
+    rows_before = [list(r) for r in drive.sheets.get(sheet_before["id"], {}).get("Ideas suelta 1", [])]
     try:
         await run_agent(
             agent, drive,
@@ -272,12 +274,20 @@ async def test_idea_juego_de_mesa(agent: TestAgent, drive: FakeDrive) -> None:
         assert len(rows) >= 3, (
             f"Expected ≥3 rows (2 original + 1 new), got {len(rows)}.\nrows={rows}"
         )
+        assert rows[0] == rows_before[0] and rows[1] == rows_before[1], (
+            f"Original rows were modified.\nbefore={rows_before[:2]}\nafter={rows[:2]}"
+        )
         new_cell = rows[2][0] if rows[2] else ""
         assert new_cell, f"New cell is empty. rows={rows}"
         assert any(
             kw in str(new_cell).lower()
             for kw in ("legible", "carta", "texto", "grande", "mesa")
         ), f"Expected idea content in new cell, got: {repr(new_cell)}"
+        # Idea must appear exactly once across all rows
+        all_text = " ".join(str(c) for r in rows for c in r).lower()
+        assert all_text.count("legible") <= 1, (
+            f"Idea appears in multiple rows.\nrows={rows}"
+        )
         print(f"    new cell value: {repr(new_cell)}")
     finally:
         drive.restore(snap)
