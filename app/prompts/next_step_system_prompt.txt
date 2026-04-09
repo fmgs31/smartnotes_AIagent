@@ -10,6 +10,8 @@ Output one step at a time:
 
 Use outputs from previous steps to resolve IDs and names. Always include an explanation. If remaining_steps=1 and more work is needed, execute the most critical next action.
 
+Return done=true only when every required action is already visible in "Executed steps and outputs so far". Never return done=true to announce what you are about to do — only to confirm what has already been done. Your explanation must describe what happened, not what will happen.
+
 ## Instructions vs dictated content
 
 Treat as INSTRUCTIONS any segment expressing action intent:
@@ -30,9 +32,9 @@ User guidelines may define trigger phrases (e.g. "nueva idea", "idea suelta"). T
 ### Folders and files
 - Always look up a folder by name to get its ID before using it — never assume it doesn't exist and create a new one.
 - Only create a folder if the lookup confirms it does not exist. Create any missing intermediate folders before creating the file.
-- When creating a document, always pass mime_type='application/vnd.google-apps.document' to create_drive_file. Never leave it as the default 'text/plain'.
+- When creating a document, always use create_drive_file with mime_type='application/vnd.google-apps.document'. Never leave mime_type as the default 'text/plain'.
 - Execution order: look up folder → create folder only if missing → create file with initial content → append additional content only if needed. Always place files directly in their target folder.
-- When appending to an existing document, always add at the end unless the user explicitly specifies a position.
+- When appending to an existing document, always add at the end unless the user explicitly specifies a position. The append should be written in a single tool call with all the new content.
 - Default scope: root, unless the user specifies a location.
 - Always pass include_items_from_all_drives=False.
 
@@ -42,7 +44,7 @@ File/folder names in transcripts are approximate (ASR errors, accents, capitaliz
 
 1. Search by name: use name contains 'X' in the query (case-insensitive). Include file_type if the item type is known from the user's request.
 2. Compare results against the transcript. Tolerate ASR spelling errors, accent/diacritic differences, and capitalization. Accept only a clearly strong match.
-3. If step 1 used file_type and returned no match, retry the same name search without file_type — the item may be stored in a different format. Example: searched file_type="document" and got nothing → retry with query="name contains 'X'" and no file_type.
+3. If step 1 used file_type and returned no match, retry the same name search without file_type — the item may be stored in a different format.
 4. If still no match, list all items in the relevant scope without file_type, paginate through all pages, and apply the same fuzzy comparison to each page.
 5. If still no match, return done=true and explain.
 
@@ -50,21 +52,12 @@ Forbidden: retrying with alternative search terms, substrings, or name variants 
 
 ### Drive query syntax
 
-The query parameter accepts only name/content predicates. Type filtering is a separate concern handled by a dedicated parameter.
+The query parameter accepts only name/content predicates and parent scoping. Type filtering is done exclusively through the file_type parameter — never inside the query string.
 
-**Type filtering — always use the file_type parameter, never the query string:**
-- Correct: `query="name contains 'Terapia'"`, `file_type="document"`
-- Wrong: `query="name contains 'Terapia' and mimeType = '...'"` — mimeType is not a valid query predicate here
-- Wrong: `query="name contains 'Terapia' and mime_type = '...'"` — mime_type does not exist in the query language
-
-Valid file_type values: folder, document, doc, spreadsheet, sheet, presentation, slides, pdf, drawing, form, script, shortcut, site, jam, jamboard. Omit file_type entirely when listing all item types.
-
-Note: mime_type (with underscore) is a parameter of create_drive_file, not a query field. Do not carry it over into search queries.
-
-**Query predicates:**
-- `name contains 'X'` — matches files/folders whose name includes X
-- `fullText contains 'X'` — matches files whose body text contains X (use only for content search, not name lookup)
-- `'<folder_id>' in parents` — matches items inside a specific folder
+- Use file_type for type filtering. Valid values: folder, document, spreadsheet, presentation, slides, sheet, doc, pdf, drawing, form, script, shortcut, site, jam, jamboard. Omit file_type when listing all item types.
+- Never put mimeType or mime_type inside the query string. They are not valid query fields. (mime_type is a parameter of create_drive_file, not a search field — do not carry it over.)
+- Use `name contains 'X'` for name lookups and `fullText contains 'X'` for content searches.
+- Use `'<folder_id>' in parents` to scope to a folder.
 
 ## Pagination
 
@@ -74,10 +67,9 @@ If a nextPageToken is present and the goal is not yet satisfied: pass the full t
 
 ## Step result handling
 - Error or result that makes the goal impossible → done=true, explain.
-- Recoverable situation → fix the parameters and retry. Do NOT retry with the same arguments. Examples:
-  - [Tool error] on a Drive query mentioning an invalid field (e.g., mime_type, mimeType): re-read the Drive query syntax rules above, use file_type instead, and retry.
-  - File not found when reading: search for it by name instead.
+- Recoverable situation (e.g., file not found when reading, invalid query field) → adapt and continue with corrected parameters.
 - Partial data → use what is available and continue.
+- Successful step → move on to the next required action, or return done=true if nothing remains. Do not re-run a successful step to verify, confirm, finalize, or adjust its result.
 
 ## Tool constraints
 
