@@ -27,12 +27,47 @@ MIME_DOC    = "application/vnd.google-apps.document"
 MIME_SHEET  = "application/vnd.google-apps.spreadsheet"
 
 FILE_TYPE_MIME: dict[str, str] = {
-    "folder":      MIME_FOLDER,
-    "document":    MIME_DOC,
-    "doc":         MIME_DOC,
-    "spreadsheet": MIME_SHEET,
-    "sheet":       MIME_SHEET,
+    "folder":        MIME_FOLDER,
+    "document":      MIME_DOC,
+    "doc":           MIME_DOC,
+    "spreadsheet":   MIME_SHEET,
+    "sheet":         MIME_SHEET,
+    "presentation":  "application/vnd.google-apps.presentation",
+    "slides":        "application/vnd.google-apps.presentation",
+    "form":          "application/vnd.google-apps.form",
+    "drawing":       "application/vnd.google-apps.drawing",
+    "pdf":           "application/pdf",
+    "shortcut":      "application/vnd.google-apps.shortcut",
+    "script":        "application/vnd.google-apps.script",
+    "site":          "application/vnd.google-apps.site",
+    "jam":           "application/vnd.google-apps.jam",
+    "jamboard":      "application/vnd.google-apps.jam",
 }
+
+_MIME_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
+
+
+def _resolve_file_type(file_type: str) -> tuple[str | None, str | None]:
+    """
+    Mirrors the server's resolve_file_type_mime().
+    Returns (mime, None) on success, (None, error_message) on failure.
+    """
+    normalized = file_type.strip()
+    if "/" in normalized:
+        if not _MIME_TYPE_PATTERN.fullmatch(normalized):
+            return None, (
+                f"[Tool error] Invalid MIME type '{file_type}'. "
+                f"Expected format like 'application/pdf'."
+            )
+        return normalized, None
+    lower = normalized.lower()
+    if lower not in FILE_TYPE_MIME:
+        valid = ", ".join(sorted(FILE_TYPE_MIME.keys()))
+        return None, (
+            f"[Tool error] Unknown file_type '{file_type}'. "
+            f"Use a MIME type (e.g. 'application/pdf') or one of: {valid}"
+        )
+    return FILE_TYPE_MIME[lower], None
 
 DRIVE_ROOT = Path(__file__).parent / "drive"
 
@@ -71,13 +106,16 @@ class FakeDrive:
         self._path_map: dict[str, Path] = {}
         self._counter: int = 1000
         self._call_log: list[dict] = []
+        self._step: int = 0
         self._load()
 
     # ── loading ──────────────────────────────────────────────────────────────
 
-    def _next_id(self) -> str:
+    def _next_id(self, name: str = "") -> str:
         self._counter += 1
-        return f"item_{self._counter}"
+        slug = re.sub(r"[^A-Za-z0-9]", "", name)[:12]
+        suffix = f"_{slug}" if slug else ""
+        return f"item_{self._counter}{suffix}"
 
     def _load(self) -> None:
         self.items["root"] = {
@@ -99,7 +137,7 @@ class FakeDrive:
                 self._load_doc(child, parent_id)
 
     def _load_folder(self, path: Path, parent_id: str) -> str:
-        item_id = self._next_id()
+        item_id = self._next_id(path.name)
         self.items[item_id] = {
             "id": item_id, "name": path.name,
             "mimeType": MIME_FOLDER, "parent_id": parent_id,
@@ -109,7 +147,7 @@ class FakeDrive:
         return item_id
 
     def _load_doc(self, path: Path, parent_id: str) -> str:
-        item_id = self._next_id()
+        item_id = self._next_id(path.stem)
         self.items[item_id] = {
             "id": item_id, "name": path.stem,
             "mimeType": MIME_DOC, "parent_id": parent_id,
@@ -119,8 +157,8 @@ class FakeDrive:
         return item_id
 
     def _load_sheet(self, path: Path, parent_id: str) -> str:
-        item_id = self._next_id()
         display_name = path.name[:-6]  # strip ".sheet"
+        item_id = self._next_id(display_name)
         self.items[item_id] = {
             "id": item_id, "name": display_name,
             "mimeType": MIME_SHEET, "parent_id": parent_id,
@@ -166,10 +204,15 @@ class FakeDrive:
     # ── call log ─────────────────────────────────────────────────────────────
 
     def log_call(self, tool: str, args: dict) -> None:
-        self._call_log.append({"tool": tool, "args": args})
+        self._step += 1
+        self._call_log.append({"step": self._step, "tool": tool, "args": args})
 
     def get_calls(self, tool: str | None = None) -> list[dict]:
         return [c for c in self._call_log if not tool or c["tool"] == tool]
+
+    def clear_calls(self) -> None:
+        self._call_log.clear()
+        self._step = 0
 
     # ── mutation helpers (write-through) ─────────────────────────────────────
 
@@ -179,7 +222,7 @@ class FakeDrive:
     def create_folder(self, name: str, parent_id: str) -> dict:
         path = self._parent_path(parent_id) / name
         path.mkdir(exist_ok=True)
-        item_id = self._next_id()
+        item_id = self._next_id(name)
         item = {"id": item_id, "name": name, "mimeType": MIME_FOLDER, "parent_id": parent_id}
         self.items[item_id] = item
         self._path_map[item_id] = path
@@ -188,7 +231,7 @@ class FakeDrive:
     def create_doc(self, name: str, parent_id: str, content: str = "") -> dict:
         path = self._parent_path(parent_id) / f"{name}.txt"
         path.write_text(content, encoding="utf-8")
-        item_id = self._next_id()
+        item_id = self._next_id(name)
         item = {"id": item_id, "name": name, "mimeType": MIME_DOC, "parent_id": parent_id}
         self.items[item_id] = item
         self._path_map[item_id] = path
@@ -198,7 +241,7 @@ class FakeDrive:
     def create_sheet(self, name: str, parent_id: str) -> dict:
         path = self._parent_path(parent_id) / f"{name}.sheet"
         path.mkdir(exist_ok=True)
-        item_id = self._next_id()
+        item_id = self._next_id(name)
         item = {"id": item_id, "name": name, "mimeType": MIME_SHEET, "parent_id": parent_id}
         self.items[item_id] = item
         self._path_map[item_id] = path
@@ -282,7 +325,20 @@ async def _load_schemas() -> dict[str, Any]:
         importlib.import_module(mod)
 
     tools = await server.list_tools()
-    return {t.name: {"description": t.description, "parameters": t.parameters} for t in tools}
+    schemas = {}
+    for t in tools:
+        params = t.parameters
+        # In production (OAuth 2.1 mode) service_decorator.py strips user_google_email from
+        # tool schemas before the LLM sees them — the decorator injects it from the auth token.
+        # Mirror that here so the LLM behaves the same way in tests as in production.
+        if isinstance(params, dict) and "user_google_email" in params.get("properties", {}):
+            import copy
+            params = copy.deepcopy(params)
+            params["properties"].pop("user_google_email", None)
+            if "required" in params:
+                params["required"] = [r for r in params["required"] if r != "user_google_email"]
+        schemas[t.name] = {"description": t.description, "parameters": params}
+    return schemas
 
 
 class FakeMCPClient:
@@ -307,13 +363,14 @@ class FakeMCPClient:
 
     async def call_tool(self, *, token: str, tool_name: str, arguments: dict) -> str:  # noqa: ARG002
         self._drive.log_call(tool_name, arguments)
-        print(f"  → {tool_name}  {arguments}", flush=True)
+        step = self._drive._step
         handler = getattr(self, f"_tool_{tool_name}", None)
         if handler is None:
             result = f"[Fake server] Tool '{tool_name}' is not implemented in the fake MCP."
         else:
             result = await handler(**arguments)
-        print(f"     ↳ {result}", flush=True)
+        print(f"  [{step}] → {tool_name}  {arguments}", flush=True)
+        print(f"      ↳ {result}", flush=True)
         return result
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -343,7 +400,11 @@ class FakeMCPClient:
                 f"Query was: {query!r}"
             )
         d = self._drive
-        mime_filter = FILE_TYPE_MIME.get(file_type) if file_type else None
+        mime_filter = None
+        if file_type:
+            mime_filter, err = _resolve_file_type(file_type)
+            if err:
+                return err
         name_re   = re.search(r"name contains '([^']+)'",    query, re.IGNORECASE)
         parent_re = re.search(r"'([^']+)'\s+in\s+parents",   query, re.IGNORECASE)
         full_re   = re.search(r"fullText contains '([^']+)'", query, re.IGNORECASE)
@@ -375,7 +436,11 @@ class FakeMCPClient:
         **_,
     ) -> str:
         d = self._drive
-        mime_filter = FILE_TYPE_MIME.get(file_type) if file_type else None
+        mime_filter = None
+        if file_type:
+            mime_filter, err = _resolve_file_type(file_type)
+            if err:
+                return err
         results = [
             item for item in d.items.values()
             if item.get("parent_id") == folder_id
@@ -401,6 +466,9 @@ class FakeMCPClient:
         mime_type: str = "text/plain",
         **_,
     ) -> str:
+        _, err = _resolve_file_type(mime_type)
+        if err:
+            return err
         if mime_type == MIME_SHEET:
             item = self._drive.create_sheet(file_name, folder_id)
         else:
@@ -592,12 +660,6 @@ class FakeMCPClient:
             return f"Applied formatting to document {document_id}."
         content = self._drive.contents.get(document_id, "")
         if end_index is not None and end_index > start_index:
-            # Reject full-document replacement
-            if start_index <= 1 and end_index >= len(content) - 1 and len(content) > 10:
-                return (
-                    "[Tool error] Replacing the entire document content is not allowed. "
-                    "Append or modify specific parts only."
-                )
             new_content = content[:start_index] + text + content[end_index:]
         else:
             new_content = content + text if start_index >= len(content) else content[:start_index] + text + content[start_index:]

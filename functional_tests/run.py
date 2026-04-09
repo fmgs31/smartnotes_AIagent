@@ -47,29 +47,17 @@ def _configure_logging(verbose: bool) -> None:
         level=logging.DEBUG if verbose else logging.WARNING,
     )
 
-    agent_log = logging.getLogger("agent")
-    agent_log.propagate = False  # prevent records reaching root handler
-    agent_log.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
 
-    # Always show WARNING+ from agent (loop detection, errors)
-    warning_handler = logging.StreamHandler()
-    warning_handler.setLevel(logging.WARNING)
-    warning_handler.setFormatter(logging.Formatter("%(levelname)s [%(name)s] %(message)s"))
-
-    # Always show planner rationale inline, cleanly
-    rationale_handler = logging.StreamHandler()
-    rationale_handler.setLevel(logging.INFO)
-    rationale_handler.setFormatter(logging.Formatter("  💭 %(message)s"))
-    rationale_handler.addFilter(
-        lambda r: r.getMessage().startswith("Planner rationale:")
-    )
-
-    # Guard against duplicate handlers (server module imports may re-trigger this)
-    if not agent_log.handlers:
-        agent_log.addHandler(warning_handler)
-        agent_log.addHandler(rationale_handler)
-
-    logging.getLogger("llm_router").setLevel(logging.INFO if verbose else logging.WARNING)
+    for name in ("agent", "llm_router"):
+        log = logging.getLogger(name)
+        log.propagate = False  # prevent records reaching root handler
+        log.setLevel(logging.INFO)
+        # Guard against duplicate handlers (server module imports may re-trigger this)
+        if not log.handlers:
+            log.addHandler(handler)
 
 
 async def main() -> None:
@@ -122,7 +110,7 @@ async def main() -> None:
             return
         print(f"     Tool calls ({len(calls)}):")
         for c in calls:
-            print(f"       {c['tool']}  {c['args']}")
+            print(f"       [{c['step']}] {c['tool']}  {c['args']}")
 
     planner = make_planner(args.model)
     drive   = FakeDrive(DRIVE_ROOT)
@@ -136,6 +124,7 @@ async def main() -> None:
 
         # Fresh agent per test (clears tool-discovery cache)
         agent = TestAgent(fake_drive=drive, planner=planner, max_plan_steps=10)
+        drive.clear_calls()
 
         t0 = time.perf_counter()
         try:

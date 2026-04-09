@@ -6,7 +6,6 @@ It should raise AssertionError on failure, any other Exception on error.
 The test must restore drive state via snapshot/restore itself.
 """
 import os
-import re
 from dataclasses import dataclass
 from typing import Callable, Awaitable
 
@@ -68,6 +67,7 @@ async def run_agent(
 ) -> str:
     """Run the agent and return the summary text."""
     known_items = build_known_items(drive)
+    print(f"Request: {text}")
     result, _ = await agent.execute(
         text=text,
         token="fake-token",
@@ -108,8 +108,10 @@ async def test_append_terapia(agent: TestAgent, drive: FakeDrive) -> None:
         assert TERAPIA_INITIAL_CONTENT.split("\n")[0] in content, (
             f"Original content was lost.\ncontent={repr(content)}"
         )
-        assert "miedo al éxito" in content, (
-            f"New content was not appended.\ncontent={repr(content)}"
+        # Content must appear exactly once — no duplicate or split inserts
+        occurrences = content.count("miedo al éxito")
+        assert occurrences == 1, (
+            f"Expected new content to appear exactly once, got {occurrences}.\ncontent={repr(content)}"
         )
         # Make sure no new document was created (should append, not create)
         new_docs = _new_docs(drive, ids_before)
@@ -349,16 +351,6 @@ async def test_read_terapia_first_line(agent: TestAgent, drive: FakeDrive) -> No
         first_line = TERAPIA_INITIAL_CONTENT.split("\n")[0]
         assert first_line in summary, (
             f"First line '{first_line}' not found in summary.\nsummary={repr(summary)}"
-        )
-
-        # Agent must not have used invalid Drive query syntax at any point
-        bad_calls = [
-            c for c in drive.get_calls("search_drive_files")
-            if re.search(r'\bmime_type\b', c["args"].get("query", ""))
-        ]
-        assert not bad_calls, (
-            f"Agent used invalid Drive query syntax 'mime_type =' (should be 'mimeType ='):\n"
-            + "\n".join(f"  {c['args']['query']}" for c in bad_calls)
         )
 
         # Nothing should have been created or modified

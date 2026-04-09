@@ -344,3 +344,114 @@ class TestFakeMCPClientDispatch:
         calls = drive.get_calls("get_doc_content")
         assert len(calls) == 1
         assert calls[0]["args"]["document_id"] == terapia["id"]
+
+
+# ─── Parameter validation (mirrors real API / server failures) ────────────────
+#
+# Each test documents what the equivalent real failure looks like:
+#   - "query field" errors → Google API returns HTTP 400 Invalid Value
+#     wrapped by @handle_http_errors as: Exception("API error in search_drive_files: ...")
+#   - "file_type" errors → server's resolve_file_type_mime() raises ValueError
+#     before the API is ever called
+#   - "mime_type" errors on create → same ValueError path in resolve_file_type_mime()
+#
+# The fake returns [Tool error] strings instead of raising, so the agent can
+# read the error and recover — same observable behaviour as a non-fatal MCP error.
+
+class TestParameterValidation:
+    async def _call(self, client, tool, **kwargs):
+        return await client.call_tool(token="t", tool_name=tool, arguments=kwargs)
+
+    # ── search_drive_files: query field validation ────────────────────────────
+
+    async def test_query_mime_type_underscore_rejected(self, client, drive):
+        # Real failure: Google API 400 "Invalid Value" — mime_type is not a Drive query field.
+        # The correct field is mimeType (camelCase), but the prompt forbids it in queries
+        # entirely — use file_type parameter instead.
+        result = await self._call(
+            client, "search_drive_files",
+            query="name contains 'Terapia' and mime_type = 'application/vnd.google-apps.document'",
+        )
+        assert "[Tool error]" in result
+        assert "mime_type" in result
+
+    async def test_query_unknown_field_rejected(self, client, drive):
+        # Real failure: Google API 400 "Invalid Value" for any unrecognised field name.
+        result = await self._call(
+            client, "search_drive_files",
+            query="name contains 'Terapia' and type = 'document'",
+        )
+        assert "[Tool error]" in result
+
+    async def test_query_valid_fields_accepted(self, client, drive):
+        # Sanity check: a well-formed query must not be rejected.
+        result = await self._call(
+            client, "search_drive_files",
+            query="name contains 'Terapia'",
+        )
+        assert "[Tool error]" not in result
+        assert "Terapia" in result
+
+    # ── search_drive_files: file_type validation ──────────────────────────────
+
+    async def test_search_invalid_file_type_rejected(self, client, drive):
+        # Real failure: server's resolve_file_type_mime() raises ValueError before
+        # the Google API is called.
+        result = await self._call(
+            client, "search_drive_files",
+            query="name contains 'Terapia'",
+            file_type="texto",  # not a valid friendly name or MIME type
+        )
+        assert "[Tool error]" in result
+        assert "texto" in result
+
+    async def test_search_valid_file_type_accepted(self, client, drive):
+        result = await self._call(
+            client, "search_drive_files",
+            query="name contains 'Terapia'",
+            file_type="document",
+        )
+        assert "[Tool error]" not in result
+
+    # ── list_drive_items: file_type validation ────────────────────────────────
+
+    async def test_list_invalid_file_type_rejected(self, client, drive):
+        # Real failure: same resolve_file_type_mime() ValueError path.
+        result = await self._call(
+            client, "list_drive_items",
+            folder_id="root",
+            file_type="archivo",  # Spanish, not a valid value
+        )
+        assert "[Tool error]" in result
+        assert "archivo" in result
+
+    async def test_list_valid_file_type_accepted(self, client, drive):
+        result = await self._call(
+            client, "list_drive_items",
+            folder_id="root",
+            file_type="folder",
+        )
+        assert "[Tool error]" not in result
+
+    # ── create_drive_file: mime_type validation ───────────────────────────────
+
+    async def test_create_invalid_mime_type_rejected(self, client, drive):
+        # Real failure: resolve_file_type_mime() rejects a value that is neither
+        # a known friendly name nor a valid MIME type string (contains '/').
+        result = await self._call(
+            client, "create_drive_file",
+            file_name="test",
+            folder_id="root",
+            mime_type="documento",  # not valid
+        )
+        assert "[Tool error]" in result
+        assert "documento" in result
+
+    async def test_create_valid_mime_type_accepted(self, client, drive):
+        result = await self._call(
+            client, "create_drive_file",
+            file_name="test doc",
+            folder_id="root",
+            mime_type="application/vnd.google-apps.document",
+        )
+        assert "[Tool error]" not in result
