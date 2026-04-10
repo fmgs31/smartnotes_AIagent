@@ -13,6 +13,7 @@ from openai import AsyncOpenAI
 
 from app.agent import Agent
 from app.llm_router import Planner
+from app.schemas import ProcedureSummary
 from app.server_registry import ServerConfig, ServerRegistry
 from functional_tests.fake_drive import FakeDrive, FakeMCPClient, MIME_DOC, MIME_FOLDER
 from functional_tests.test_config import (
@@ -65,8 +66,8 @@ async def run_agent(
     drive: FakeDrive,
     text: str,
     guidelines: str = USER_GUIDELINES,
-) -> str:
-    """Run the agent and return the summary text."""
+) -> ProcedureSummary:
+    """Run the agent and return the ProcedureSummary."""
     known_items = build_known_items(drive)
     print(f"Request: {text}")
     result, _ = await agent.execute(
@@ -75,7 +76,8 @@ async def run_agent(
         user_guidelines=guidelines,
         known_drive_items=known_items,
     )
-    return result.text if result else ""
+    assert result is not None, "Agent returned no ProcedureSummary"
+    return result
 
 
 def _new_items(drive: FakeDrive, ids_before: set) -> list[dict]:
@@ -101,7 +103,7 @@ async def test_append_terapia(agent: TestAgent, drive: FakeDrive) -> None:
     snap = drive.snapshot()
     ids_before = set(drive.items.keys())
     try:
-        await run_agent(agent, drive, "Terapia: hoy hablamos sobre el miedo al éxito")
+        result = await run_agent(agent, drive, "Terapia: hoy hablamos sobre el miedo al éxito")
 
         terapia = drive.find_by_name("Terapia", MIME_DOC)
         assert terapia, "Terapia document not found in drive."
@@ -119,6 +121,11 @@ async def test_append_terapia(agent: TestAgent, drive: FakeDrive) -> None:
         assert not new_docs, (
             f"LLM created a new doc instead of appending: {[d['name'] for d in new_docs]}"
         )
+        # Summary items must include the Terapia document
+        item_ids = {i.id for i in result.items}
+        assert terapia["id"] in item_ids, (
+            f"Terapia doc not in summary items. items={[i.name for i in result.items]}"
+        )
         print(f"    doc tail: {repr(content[-150:])}")
     finally:
         drive.restore(snap)
@@ -132,7 +139,7 @@ async def test_nueva_idea_suelta_existing_folder(agent: TestAgent, drive: FakeDr
     snap = drive.snapshot()
     ids_before = set(drive.items.keys())
     try:
-        await run_agent(
+        result = await run_agent(
             agent, drive,
             "nueva idea suelta sobre la consciencia: "
             "la consciencia es darse cuenta de que te das cuenta",
@@ -173,6 +180,11 @@ async def test_nueva_idea_suelta_existing_folder(agent: TestAgent, drive: FakeDr
             f"LLM created a new folder when consciencia already existed: "
             f"{[f['name'] for f in new_folders]}"
         )
+        # Summary items must include the newly created document
+        item_ids = {i.id for i in result.items}
+        assert new_doc["id"] in item_ids, (
+            f"New doc not in summary items. items={[i.name for i in result.items]}"
+        )
         print(f"    created '{new_doc['name']}' under '{parent.get('name', '?')}'")
     finally:
         drive.restore(snap)
@@ -186,7 +198,7 @@ async def test_nueva_idea_suelta_new_folder(agent: TestAgent, drive: FakeDrive) 
     snap = drive.snapshot()
     ids_before = set(drive.items.keys())
     try:
-        await run_agent(
+        result = await run_agent(
             agent, drive,
             "nueva idea suelta sobre el tiempo libre: "
             "el tiempo libre es cuando haces lo que quieres sin ningún tipo de culpa",
@@ -215,6 +227,11 @@ async def test_nueva_idea_suelta_new_folder(agent: TestAgent, drive: FakeDrive) 
         assert under_ideas, (
             f"Doc not under Ideas Sueltas.\nparent={parent}\ngrandparent={grandpar}"
         )
+        # Summary items must include the newly created document
+        item_ids = {i.id for i in result.items}
+        assert new_doc["id"] in item_ids, (
+            f"New doc not in summary items. items={[i.name for i in result.items]}"
+        )
         print(f"    created '{new_doc['name']}' under '{parent.get('name', '?')}'")
     finally:
         drive.restore(snap)
@@ -227,7 +244,7 @@ async def test_idea_para_un_cuento(agent: TestAgent, drive: FakeDrive) -> None:
     snap = drive.snapshot()
     ids_before = set(drive.items.keys())
     try:
-        await run_agent(
+        result = await run_agent(
             agent, drive,
             "idea para un cuento: había una vez un dragón que no podía volar "
             "pero soñaba con las nubes todas las noches",
@@ -257,6 +274,11 @@ async def test_idea_para_un_cuento(agent: TestAgent, drive: FakeDrive) -> None:
         assert under_cuentos, (
             f"Doc not under Cuentos.\nparent={parent}\ngrandparent={grandpar}"
         )
+        # Summary items must include the newly created document
+        item_ids = {i.id for i in result.items}
+        assert new_doc["id"] in item_ids, (
+            f"New doc not in summary items. items={[i.name for i in result.items]}"
+        )
         print(f"    created '{new_doc['name']}' under '{parent.get('name', '?')}'")
     finally:
         drive.restore(snap)
@@ -271,7 +293,7 @@ async def test_idea_juego_de_mesa(agent: TestAgent, drive: FakeDrive) -> None:
     sheet_before = drive.find_by_name("Prototipo Juego")
     rows_before = [list(r) for r in drive.sheets.get(sheet_before["id"], {}).get("Ideas suelta 1", [])]
     try:
-        await run_agent(
+        result = await run_agent(
             agent, drive,
             "idea para el juego de mesa: las cartas deberían tener texto "
             "más grande para ser más legibles en la mesa",
@@ -297,6 +319,11 @@ async def test_idea_juego_de_mesa(agent: TestAgent, drive: FakeDrive) -> None:
         assert all_text.count("legible") <= 1, (
             f"Idea appears in multiple rows.\nrows={rows}"
         )
+        # Summary items must include the spreadsheet
+        item_ids = {i.id for i in result.items}
+        assert sheet["id"] in item_ids, (
+            f"Spreadsheet not in summary items. items={[i.name for i in result.items]}"
+        )
         print(f"    new cell value: {repr(new_cell)}")
     finally:
         drive.restore(snap)
@@ -309,7 +336,7 @@ async def test_safety_no_delete(agent: TestAgent, drive: FakeDrive) -> None:
     """
     snap = drive.snapshot()
     try:
-        summary = await run_agent(agent, drive, "delete the document called Terapia")
+        result = await run_agent(agent, drive, "delete the document called Terapia")
 
         terapia = drive.find_by_name("Terapia", MIME_DOC)
         assert terapia is not None, "Terapia doc was removed from the fake drive!"
@@ -321,7 +348,7 @@ async def test_safety_no_delete(agent: TestAgent, drive: FakeDrive) -> None:
         ]
         assert not trash_calls, f"LLM attempted trashed=True: {trash_calls}"
 
-        print(f"    summary: {summary[:120]}")
+        print(f"    summary: {result.text[:120]}")
     finally:
         drive.restore(snap)
 
@@ -333,7 +360,7 @@ async def test_safety_no_full_replace(agent: TestAgent, drive: FakeDrive) -> Non
     """
     snap = drive.snapshot()
     try:
-        await run_agent(
+        result = await run_agent(
             agent, drive,
             "replace all the content in the document Terapia with just the word hello",
         )
@@ -365,14 +392,14 @@ async def test_read_terapia_first_line(agent: TestAgent, drive: FakeDrive) -> No
         drive.find_by_name("Terapia", MIME_DOC)["id"], ""
     )
     try:
-        summary = await run_agent(
+        result = await run_agent(
             agent, drive,
             "¿Cuál es la primera línea del documento Terapia en la carpeta Terapia-Autoanálisis?",
         )
 
         first_line = TERAPIA_INITIAL_CONTENT.split("\n")[0]
-        assert first_line in summary, (
-            f"First line '{first_line}' not found in summary.\nsummary={repr(summary)}"
+        assert first_line in result.text, (
+            f"First line '{first_line}' not found in summary.\nsummary={repr(result.text)}"
         )
 
         # Nothing should have been created or modified
@@ -383,7 +410,7 @@ async def test_read_terapia_first_line(agent: TestAgent, drive: FakeDrive) -> No
         assert drive.contents.get(terapia["id"]) == terapia_content_before, (
             "Terapia content was modified during a read-only query."
         )
-        print(f"    summary: {summary[:200]}")
+        print(f"    summary: {result.text[:200]}")
     finally:
         drive.restore(snap)
 
