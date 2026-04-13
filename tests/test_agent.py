@@ -58,14 +58,14 @@ class TestHandleText:
 
         mock_plan.plan_next_step.side_effect = [
             NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "test"}),
-            NextStepPlan(done=True, tool_name=""),
+            NextStepPlan(done=True, summary="Found 3 documents."),
         ]
-        mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="Found 3 documents.", items=[]))
 
         procedure, steps = await svc.execute(text="find docs", token="tok")
 
         assert steps[-1].tool_name == "test-server.search"
         assert isinstance(procedure, ProcedureSummary)
+        assert procedure.text == "Found 3 documents."
         assert len(steps) == 1
 
     @patch("app.agent.MCPClient")
@@ -84,26 +84,27 @@ class TestHandleText:
         mock_plan.plan_next_step.side_effect = [
             NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "a"}),
             NextStepPlan(done=False, tool_name="test-server.create", arguments={"title": "b"}),
-            NextStepPlan(done=True, tool_name=""),
+            NextStepPlan(done=True, summary="Searched and created."),
         ]
-        mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="Searched and created.", items=[]))
 
         procedure, steps = await svc.execute(text="search and create", token="tok")
 
         assert len(steps) == 2
         assert isinstance(procedure, ProcedureSummary)
+        assert procedure.text == "Searched and created."
 
     @patch("app.agent.MCPClient")
-    async def test_planner_immediately_done_raises(self, mock_mcp_cls):
+    async def test_planner_immediately_done_returns_summary(self, mock_mcp_cls):
         mock_plan = AsyncMock()
         svc, servers = _make_agent(planner=mock_plan)
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
-        mock_plan.plan_next_step.return_value = NextStepPlan(done=True, tool_name="")
+        mock_plan.plan_next_step.return_value = NextStepPlan(done=True, summary="Nothing to do.")
         mock_mcp_cls.return_value = _mcp_mock()
 
-        with pytest.raises(ValueError, match="did not produce"):
-            await svc.execute(text="do something", token="tok")
+        result, steps = await svc.execute(text="do something", token="tok")
+        assert result.text == "Nothing to do."
+        assert steps == []
 
     @patch("app.agent.MCPClient")
     async def test_loop_detection_records_error_and_continues(self, mock_mcp_cls):
@@ -112,8 +113,7 @@ class TestHandleText:
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
         same = NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "x"})
-        mock_plan.plan_next_step.side_effect = [same, same, NextStepPlan(done=True, tool_name="")]
-        mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="partial", items=[]))
+        mock_plan.plan_next_step.side_effect = [same, same, NextStepPlan(done=True, summary="partial")]
         mock_mcp_cls.return_value = _mcp_mock()
 
         procedure, steps = await svc.execute(text="loop me", token="tok")
@@ -129,9 +129,8 @@ class TestHandleText:
         svc._tool_id_to_schema = {"test-server.search": {}}
         mock_plan.plan_next_step.side_effect = [
             NextStepPlan(done=False, tool_name="test-server.nonexistent", arguments={}),
-            NextStepPlan(done=True, tool_name=""),
+            NextStepPlan(done=True, summary="failed"),
         ]
-        mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="failed", items=[]))
         mock_mcp_cls.return_value = _mcp_mock()
 
         procedure, steps = await svc.execute(text="call missing tool", token="tok")
@@ -151,9 +150,8 @@ class TestHandleText:
         mock_plan.plan_next_step.side_effect = [
             NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "x"}),
             NextStepPlan(done=False, tool_name="test-server.create", arguments={"title": "y"}),
-            NextStepPlan(done=True, tool_name=""),
+            NextStepPlan(done=True, summary="partial"),
         ]
-        mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="partial", items=[]))
         failing_mock = _mcp_mock()
         failing_mock.call_tool = AsyncMock(side_effect=[RuntimeError("MCP server error"), "created"])
         mock_mcp_cls.return_value = failing_mock
@@ -177,9 +175,8 @@ class TestHandleText:
 
         mock_plan.plan_next_step.side_effect = [
             NextStepPlan(done=False, tool_name="test-server.search", arguments={}),
-            NextStepPlan(done=True, tool_name=""),
+            NextStepPlan(done=True, summary="done"),
         ]
-        mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="done", items=[]))
 
         await svc.execute(text="find docs", token="tok")
 
@@ -200,12 +197,12 @@ class TestHandleText:
             NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": str(i)})
             for i in range(svc.max_plan_steps)
         ]
-        mock_plan.summarize_procedure = AsyncMock(return_value=ProcedureSummary(text="done", items=[]))
         mock_mcp_cls.return_value = _mcp_mock(call_result="result")
 
         procedure, steps = await svc.execute(text="keep going", token="tok")
 
         assert len(steps) == svc.max_plan_steps
+        assert procedure.text == ""
 
 
 # ── _ensure_tools_discovered ──────────────────────────────────────────────────
@@ -402,23 +399,22 @@ class TestStream:
         assert "planner exploded" in events[0]["detail"]
 
     @patch("app.agent.MCPClient")
-    async def test_summarizer_exception_yields_error_event(self, mock_mcp_cls):
+    async def test_done_plan_summary_in_result_event(self, mock_mcp_cls):
         mock_plan = AsyncMock()
         svc, servers = _make_agent(planner=mock_plan)
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
         mock_plan.plan_next_step.side_effect = [
             NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "x"}),
-            NextStepPlan(done=True, tool_name=""),
+            NextStepPlan(done=True, summary="Found results."),
         ]
-        mock_plan.summarize_procedure = AsyncMock(side_effect=RuntimeError("summarizer exploded"))
         mock_mcp_cls.return_value = _mcp_mock()
 
         events = [e async for e in svc.stream(text="do something", token="tok")]
 
-        error_events = [e for e in events if e["type"] == EventType.ERROR]
-        assert len(error_events) == 1
-        assert "summarizer exploded" in error_events[0]["detail"]
+        result_events = [e for e in events if e["type"] == EventType.RESULT]
+        assert len(result_events) == 1
+        assert result_events[0]["text"] == "Found results."
 
 
 class TestExtractToolsWithSchema:

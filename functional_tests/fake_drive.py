@@ -494,11 +494,11 @@ class FakeMCPClient:
         name: str | None = None,
         **_,
     ) -> str:
-        if trashed is True:
-            return "[Tool error] Deleting or trashing files is not allowed by this server."
         item = self._drive.items.get(file_id)
         if not item:
             return f"[Tool error] File '{file_id}' not found."
+        if trashed is True:
+            item["trashed"] = True
         if name:
             item["name"] = name
         return f"Updated file '{item['name']}' (ID: {file_id})."
@@ -588,11 +588,11 @@ class FakeMCPClient:
     async def _tool_update_drive_permission(self, file_id: str, permission_id: str, **_) -> str:
         return f"Updated permission '{permission_id}' on file '{file_id}' (fake server)."
 
-    async def _tool_remove_drive_permission(self, **_) -> str:
-        return "[Tool error] Removing permissions is not allowed by this server."
+    async def _tool_remove_drive_permission(self, file_id: str, permission_id: str, **_) -> str:
+        return f"Removed permission '{permission_id}' from file '{file_id}' (fake server)."
 
-    async def _tool_transfer_drive_ownership(self, **_) -> str:
-        return "[Tool error] Transferring ownership is not allowed by this server."
+    async def _tool_transfer_drive_ownership(self, file_id: str, new_owner_email: str, **_) -> str:
+        return f"Transferred ownership of '{file_id}' to '{new_owner_email}' (fake server)."
 
     async def _tool_set_drive_file_permissions(self, file_id: str, **_) -> str:
         return f"Updated file-level permissions for '{file_id}' (fake server)."

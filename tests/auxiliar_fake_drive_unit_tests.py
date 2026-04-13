@@ -252,11 +252,11 @@ class TestFakeMCPClientDispatch:
         assert "nuevo tema" in result
         assert drive.find_by_name("nuevo tema") is not None
 
-    async def test_update_drive_file_trashed_is_blocked(self, client, drive):
+    async def test_update_drive_file_trashed(self, client, drive):
         terapia = drive.find_by_name("Terapia")
         result = await self._call(client, "update_drive_file", file_id=terapia["id"], trashed=True)
-        assert "not allowed" in result.lower()
-        assert drive.find_by_name("Terapia") is not None
+        assert "Updated" in result
+        assert terapia.get("trashed") is True
 
     async def test_modify_doc_text_appends(self, client, drive):
         terapia = drive.find_by_name("Terapia")
@@ -271,7 +271,7 @@ class TestFakeMCPClientDispatch:
         assert "appended text" in drive.contents[terapia["id"]]
         assert original in drive.contents[terapia["id"]]
 
-    async def test_modify_doc_text_full_replace_blocked(self, client, drive):
+    async def test_modify_doc_text_range_replace(self, client, drive):
         terapia = drive.find_by_name("Terapia")
         content = drive.contents[terapia["id"]]
         result = await self._call(
@@ -281,8 +281,10 @@ class TestFakeMCPClientDispatch:
             end_index=len(content) - 1,
             text="hello",
         )
-        assert "not allowed" in result.lower()
-        assert drive.contents[terapia["id"]] == content  # unchanged
+        assert "Inserted" in result
+        new_content = drive.contents[terapia["id"]]
+        # First char preserved + "hello" + last char preserved
+        assert new_content == content[0] + "hello" + content[-1]
 
     async def test_find_and_replace_doc(self, client, drive):
         terapia = drive.find_by_name("Terapia")
