@@ -6,7 +6,7 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
-from app.schemas import NextStepPlan, ProcedureSummary
+from app.schemas import NextStepPlan
 
 log = logging.getLogger("llm_router")
 
@@ -24,15 +24,7 @@ class Planner:
             "tool_name": {"type": "string"},
             "arguments": {"type": "object", "additionalProperties": True},
             "explanation": {"type": "string"},
-        },
-        "required": ["done"],
-    }
-
-    _SUMMARIZE_SCHEMA = {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "text": {"type": "string"},
+            "summary": {"type": "string"},
             "items": {
                 "type": "array",
                 "items": {
@@ -48,20 +40,19 @@ class Planner:
                 },
             },
         },
-        "required": ["text", "items"],
+        "required": ["done"],
     }
 
     def __init__(self, client: AsyncOpenAI, model: str):
         self._client = client
         self._model = model
         self._system_prompt = (_PROMPTS / "next_step_system_prompt.txt").read_text(encoding="utf-8").strip()
-        self._summarize_prompt = (_PROMPTS / "summarize_system_prompt.txt").read_text(encoding="utf-8").strip()
 
     async def plan_next_step(
         self,
         *,
         text: str,
-        known_drive_items: list = [],
+        known_drive_items: list | None = None,
         user_guidelines: str | None = None,
         planner_model: str | None = None,
         allowed_tools: list[str] | None,
@@ -114,43 +105,6 @@ class Planner:
             f"Planner output: done={plan.done} tool_name={plan.tool_name} has_arguments={bool(plan.arguments)}"
         )
         return plan
-
-    async def summarize_procedure(
-        self,
-        *,
-        text: str,
-        executed_steps: list[dict],
-        planner_model: str | None = None,
-    ) -> ProcedureSummary:
-        """Ask the LLM to summarize the completed procedure and extract Drive items."""
-        user = (
-            f"User request:\n{text}\n\n"
-            f"Executed steps:\n{self._summarize_executed_steps(executed_steps)}"
-        )
-
-        log.info("Summarizing procedure (%d steps)", len(executed_steps))
-
-        t0 = time.perf_counter()
-        resp = await self._client.responses.create(
-            model=planner_model or self._model,
-            input=[
-                {"role": "system", "content": self._summarize_prompt},
-                {"role": "user", "content": user},
-            ],
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "procedure_summary",
-                    "strict": False,
-                    "schema": self._SUMMARIZE_SCHEMA,
-                }
-            },
-        )
-        log.info("summarize_procedure took %.2fs", time.perf_counter() - t0)
-        self._log_usage(resp, "summarize_procedure")
-        data = json.loads(self._extract_output_text(resp))
-        log.info("Summary: %s", data.get("text"))
-        return ProcedureSummary(**data)
 
     @staticmethod
     def _log_usage(resp, call_name: str) -> None:

@@ -23,6 +23,8 @@ class NextStepPlan(BaseModel):
     tool_name: str = ""
     arguments: Dict[str, Any] = Field(default_factory=dict)
     explanation: str | None = None
+    summary: str = ""
+    items: list["DriveItem"] = Field(default_factory=list)
 
     @field_validator("arguments", mode="before")
     @classmethod
