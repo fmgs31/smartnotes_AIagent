@@ -6,11 +6,12 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
+from app.config import settings
 from app.schemas import NextStepPlan
 
 log = logging.getLogger("llm_router")
 
-_PROMPTS = Path(__file__).resolve().parent / "prompts"
+_PROMPTS_FOLDER = Path(__file__).resolve().parent / "prompts"
 
 
 class Planner:
@@ -44,10 +45,28 @@ class Planner:
         "required": ["done"],
     }
 
-    def __init__(self, client: AsyncOpenAI, model: str):
+    def __init__(self, client: AsyncOpenAI):
         self._client = client
-        self._model = model
-        self._system_prompt = (_PROMPTS / "next_step_system_prompt.txt").read_text(encoding="utf-8").strip()
+        prompt_map = json.loads(Path(settings.model_prompt_map_path).read_text(encoding="utf-8"))
+        if "default_model" not in prompt_map or "models" not in prompt_map:
+            raise ValueError("model_prompt_map.json must define 'default_model' and 'models'")
+        self._models_mapping: dict[str, dict] = prompt_map["models"]
+        for model_name, attrs in self._models_mapping.items():
+            missing = {"full_name", "vendor", "prompt_file"} - attrs.keys()
+            if missing:
+                raise ValueError(f"Model '{model_name}' missing keys: {sorted(missing)}")
+        self._default_model: str = prompt_map["default_model"]
+        self._model_prompt_map: dict[str, str] = {
+            model_name: (_PROMPTS_FOLDER / attrs["prompt_file"]).read_text(encoding="utf-8").strip()
+            for model_name, attrs in self._models_mapping.items()
+        }
+
+    def _system_prompt_from_model_name(self, model: str) -> str:
+        for candidate in (model, self._default_model):
+            for prefix, prompt in self._model_prompt_map.items():
+                if candidate.startswith(prefix):
+                    return prompt
+        raise RuntimeError(f"No prompt found for model {model!r} or default {self._default_model!r}")
 
     async def plan_next_step(
         self,
@@ -86,10 +105,11 @@ class Planner:
         log.debug("plan_next_step user prompt:\n%s", core_context)
 
         t0 = time.perf_counter()
+        resolved_model = planner_model or self._default_model
         resp = await self._client.responses.create(
-            model=planner_model or self._model,
+            model=resolved_model,
             input=[
-                {"role": "system", "content": self._system_prompt},
+                {"role": "system", "content": self._system_prompt_from_model_name(resolved_model)},
                 {"role": "user", "content": user},
             ],
             text={
