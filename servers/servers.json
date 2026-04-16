@@ -1,0 +1,21 @@
+{
+    "servers": [
+        {
+            "id": "gw",
+            "url": "http://localhost:8000/mcp/",
+            "url_env_var_name": "GOOGLE_WORKSPACE_URL",
+            "blocked_tools": [
+                "import_to_google_doc",
+                "create_doc",
+                "find_and_replace_doc",
+                "update_drive_file",
+                "manage_drive_access",
+                "remove_drive_permission",
+                "set_drive_file_permissions",
+                "update_drive_permission",
+                "manage_drive_access",
+                "batch_update_doc"
+            ]
+        }
+    ]
+}

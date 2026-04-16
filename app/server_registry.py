@@ -43,9 +43,9 @@ class ServerRegistry:
                 raise ValueError(f"Server '{sid}' has invalid blocked_tools; expected non-empty strings")
 
             # Allow the URL to be overridden at runtime via an env var.
-            # Convention: server id "google-workspace" → env var GOOGLE_WORKSPACE_URL
-            env_key = sid.upper().replace("-", "_") + "_URL"
-            url = os.environ.get(env_key) or url
+            url_env_var_name = s.get("url_env_var_name")
+            if url_env_var_name:
+                url = os.environ.get(url_env_var_name) or url
 
             servers[sid] = ServerConfig(
                 id=sid,
