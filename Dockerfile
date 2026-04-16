@@ -8,7 +8,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
-COPY servers.json .
+COPY servers/servers.json servers/
 
 # Cloud Run injects PORT (default 8080); uvicorn reads it at startup
 EXPOSE 8080
