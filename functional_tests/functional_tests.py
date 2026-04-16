@@ -14,7 +14,7 @@ from typing import Callable, Awaitable
 from openai import AsyncOpenAI
 
 from app.agent import Agent
-from app.llm_router import Planner
+from app.planner import Planner
 from app.schemas import ExecutedToolStep, ProcedureSummary
 from app.server_registry import ServerConfig, ServerRegistry
 from functional_tests.fake_drive import FakeDrive, FakeMCPClient, MIME_DOC, MIME_FOLDER

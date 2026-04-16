@@ -37,8 +37,8 @@ os.environ.setdefault("ALLOWED_EMAILS",       "test@example.com")
 from functional_tests.fake_drive import FakeDrive, DRIVE_ROOT       # noqa: E402
 from functional_tests.functional_tests import ALL_TESTS, TestAgent, make_planner  # noqa: E402
 
-# DEFAULT_MODEL = "gpt-5-nano-2025-08-07"
-DEFAULT_MODEL = "gpt-5-mini-2025-08-07"
+DEFAULT_MODEL = "gpt-5-nano-2025-08-07"
+# DEFAULT_MODEL = "gpt-5.4-nano-2026-03-17"
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -52,7 +52,7 @@ def _configure_logging(verbose: bool) -> None:
     handler.setLevel(level)
     handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
 
-    for name in ("agent", "llm_router"):
+    for name in ("agent", "planner"):
         log = logging.getLogger(name)
         log.propagate = False
         log.setLevel(level)

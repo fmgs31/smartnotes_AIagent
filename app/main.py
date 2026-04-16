@@ -11,7 +11,7 @@ from app.config import settings
 from app.agent_memory_firestore import FirestoreAgentMemory
 from google.cloud.firestore_v1.async_client import AsyncClient
 from app.error_mapping import map_exception_to_http
-from app.llm_router import Planner
+from app.planner import Planner
 from app.logging_config import configure_app_logging
 from app.schemas import EventType, InboundRequest
 from app.server_registry import ServerRegistry

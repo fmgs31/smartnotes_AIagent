@@ -9,7 +9,7 @@ from openai import AsyncOpenAI
 from app.config import settings
 from app.schemas import NextStepPlan
 
-log = logging.getLogger("llm_router")
+log = logging.getLogger("planner")
 
 _PROMPTS_FOLDER = Path(__file__).resolve().parent / "prompts"
 

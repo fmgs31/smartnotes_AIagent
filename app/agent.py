@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent_memory import AgentMemory
-from app.llm_router import Planner
+from app.planner import Planner
 from app.mcp_client import MCPClient
 from app.schemas import ErrorEvent, EventType, ExecutedToolStep, NextStepPlan, ProcedureSummary
 from app.server_registry import ServerConfig, ServerRegistry
