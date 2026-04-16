@@ -66,19 +66,23 @@ class Planner:
         items_str = json.dumps(known_drive_items, ensure_ascii=False) if known_drive_items else None
         drive_items_section = f"Known Drive items:\n{items_str}\n\n" if items_str else ""
         guidelines_section = f"User guidelines:\n{user_guidelines}\n\n" if user_guidelines else ""
-        user = (
-            f"Current date: {date.today().isoformat()}\n\n"
+        core_context = (
             f"User request:\n{text}\n\n"
             f"{drive_items_section}"
-            f"{guidelines_section}"
             f"Remaining execution budget (steps): {remaining_steps}\n\n"
             f"Executed steps and outputs so far:\n{executed_json}\n\n"
+        )
+        user = (
+            f"Current date: {date.today().isoformat()}\n\n"
+            f"{core_context}"
+            f"{guidelines_section}"
             f"Allowed tools (IDs):\n{allowed_tools if allowed_tools else 'ANY'}\n\n"
             "Tool input schemas (mapping from tool_id to JSON Schema):\n"
             f"{schemas_json}"
         )
 
         log.info(f"Calling LLM now: Planning next step: remaining_steps={remaining_steps}, executed_steps={len(executed_steps or [])}")
+        log.debug("plan_next_step user prompt:\n%s", core_context)
 
         t0 = time.perf_counter()
         resp = await self._client.responses.create(
@@ -102,7 +106,8 @@ class Planner:
         plan = NextStepPlan(**data)
         log.info(f"Data: {data}")
         log.info(
-            f"Planner output: done={plan.done} tool_name={plan.tool_name} has_arguments={bool(plan.arguments)}"
+            f"Planner output: done={plan.done} tool_name={plan.tool_name} "
+            f"has_arguments={bool(plan.arguments)} last_step_check={plan.last_step_check!r}"
         )
         return plan
 
