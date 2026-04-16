@@ -1,7 +1,7 @@
 """
 Static configuration and helpers shared across all functional tests.
 """
-from functional_tests.fake_drive import FakeDrive, MIME_DOC
+from functional_tests.fake_drive import DRIVE_ROOT, FakeDrive, MIME_DOC
 
 # ─── User guidelines (copied from send_text_request.py) ───────────────────────
 
@@ -16,7 +16,7 @@ Trigger mappings (check in this order):
 
 # ─── Stable content for assertions ────────────────────────────────────────────
 
-TERAPIA_INITIAL_CONTENT = "Sesión del 2025-01-15\n\nHoy hablamos sobre mi infancia.\n"
+TERAPIA_INITIAL_CONTENT = (DRIVE_ROOT / "Terapia-Autoanálisis" / "Terapia.txt").read_text(encoding="utf-8")
 
 # ─── Known drive items passed to the agent (mirrors production usage) ─────────
 

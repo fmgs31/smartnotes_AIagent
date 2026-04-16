@@ -33,29 +33,29 @@ load_dotenv(ROOT / ".env")
 os.environ.setdefault("OPENAI_API_KEY",       os.environ.get("OPENAI_API_KEY", ""))
 os.environ.setdefault("APP_API_KEY",          "functional-test-key")
 os.environ.setdefault("ALLOWED_EMAILS",       "test@example.com")
-os.environ.setdefault("SERVERS_CONFIG_PATH",  str(ROOT / "tests" / "servers.json"))
 
 from functional_tests.fake_drive import FakeDrive, DRIVE_ROOT       # noqa: E402
 from functional_tests.functional_tests import ALL_TESTS, TestAgent, make_planner  # noqa: E402
 
-DEFAULT_MODEL = "gpt-5-nano-2025-08-07"
+# DEFAULT_MODEL = "gpt-5-nano-2025-08-07"
+DEFAULT_MODEL = "gpt-5-mini-2025-08-07"
 
 
 def _configure_logging(verbose: bool) -> None:
     logging.basicConfig(
         format="%(levelname)s [%(name)s] %(message)s",
-        level=logging.DEBUG if verbose else logging.WARNING,
+        level=logging.WARNING,
     )
 
+    level = logging.DEBUG if verbose else logging.INFO
     handler = logging.StreamHandler()
-    handler.setLevel(logging.INFO)
+    handler.setLevel(level)
     handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
 
     for name in ("agent", "llm_router"):
         log = logging.getLogger(name)
-        log.propagate = False  # prevent records reaching root handler
-        log.setLevel(logging.INFO)
-        # Guard against duplicate handlers (server module imports may re-trigger this)
+        log.propagate = False
+        log.setLevel(level)
         if not log.handlers:
             log.addHandler(handler)
 

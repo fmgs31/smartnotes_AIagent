@@ -5,8 +5,10 @@ Each test function signature is: async def test_*(agent, drive) -> None
 It should raise AssertionError on failure, any other Exception on error.
 The test must restore drive state via snapshot/restore itself.
 """
+import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Awaitable
 
 from openai import AsyncOpenAI
@@ -22,6 +24,18 @@ from functional_tests.test_config import (
     build_known_items,
 )
 
+_SERVERS_JSON = Path(__file__).resolve().parent.parent / "servers" / "servers.json"
+
+
+def _load_server_config() -> ServerConfig:
+    data = json.loads(_SERVERS_JSON.read_text(encoding="utf-8"))
+    server = data["servers"][0]
+    return ServerConfig(
+        id=server["id"],
+        url="http://fake-mcp-does-not-exist/",
+        blocked_tools=tuple(server.get("blocked_tools", [])),
+    )
+
 
 # ─── TestAgent ────────────────────────────────────────────────────────────────
 
@@ -32,13 +46,8 @@ class TestAgent(Agent):
     """
 
     def __init__(self, fake_drive: FakeDrive, planner: Planner, max_plan_steps: int = 10):
-        registry = ServerRegistry(servers={
-            "google-workspace": ServerConfig(
-                id="google-workspace",
-                url="http://fake-mcp-does-not-exist/",
-                blocked_tools=("import_to_google_doc",),
-            )
-        })
+        cfg = _load_server_config()
+        registry = ServerRegistry(servers={cfg.id: cfg})
         super().__init__(registry=registry, planner=planner, max_plan_steps=max_plan_steps)
         self._fake_drive = fake_drive
 
@@ -101,6 +110,35 @@ def _new_folders(drive: FakeDrive, ids_before: set) -> list[dict]:
     return [i for i in _new_items(drive, ids_before) if i["mimeType"] == MIME_FOLDER]
 
 
+# Top-level folders whose IDs are always passed in known_drive_items.
+# The agent should never search by name for any of these.
+_KNOWN_ITEM_NAMES = ("Ideas Sueltas", "Terapia-Autoanálisis", "Cuentos", "PrototipoJuego")
+
+
+def _unnecessary_known_searches(drive: FakeDrive) -> list[dict]:
+    """Return search/list calls whose query references a known-item name."""
+    bad = []
+    for call in drive.get_calls():
+        if call["tool"] not in ("search_drive_files", "search_docs", "list_drive_items"):
+            continue
+        query = str(call["args"].get("query", "")).lower()
+        if not query:
+            continue
+        for name in _KNOWN_ITEM_NAMES:
+            if name.lower() in query:
+                bad.append(call)
+                break
+    return bad
+
+
+def _assert_no_known_item_searches(drive: FakeDrive) -> None:
+    bad = _unnecessary_known_searches(drive)
+    assert not bad, (
+        "Agent searched for a known-item by name instead of using its ID:\n"
+        + "\n".join(f"  {c['tool']} {c['args']}" for c in bad)
+    )
+
+
 # ─── Test cases ───────────────────────────────────────────────────────────────
 
 async def test_append_terapia(agent: TestAgent, drive: FakeDrive) -> None:
@@ -134,6 +172,7 @@ async def test_append_terapia(agent: TestAgent, drive: FakeDrive) -> None:
         assert terapia["id"] in item_ids, (
             f"Terapia doc not in summary items. items={[i.name for i in result.items]}"
         )
+        _assert_no_known_item_searches(drive)
         loops = _loop_warnings(steps)
         if loops:
             print(f"    WARNING loop retries: {loops}")
@@ -196,6 +235,7 @@ async def test_nueva_idea_suelta_existing_folder(agent: TestAgent, drive: FakeDr
         assert new_doc["id"] in item_ids, (
             f"New doc not in summary items. items={[i.name for i in result.items]}"
         )
+        _assert_no_known_item_searches(drive)
         loops = _loop_warnings(steps)
         if loops:
             print(f"    WARNING loop retries: {loops}")
@@ -246,6 +286,7 @@ async def test_nueva_idea_suelta_new_folder(agent: TestAgent, drive: FakeDrive) 
         assert new_doc["id"] in item_ids, (
             f"New doc not in summary items. items={[i.name for i in result.items]}"
         )
+        _assert_no_known_item_searches(drive)
         loops = _loop_warnings(steps)
         if loops:
             print(f"    WARNING loop retries: {loops}")
@@ -296,6 +337,7 @@ async def test_idea_para_un_cuento(agent: TestAgent, drive: FakeDrive) -> None:
         assert new_doc["id"] in item_ids, (
             f"New doc not in summary items. items={[i.name for i in result.items]}"
         )
+        _assert_no_known_item_searches(drive)
         loops = _loop_warnings(steps)
         if loops:
             print(f"    WARNING loop retries: {loops}")
@@ -344,6 +386,7 @@ async def test_idea_juego_de_mesa(agent: TestAgent, drive: FakeDrive) -> None:
         assert sheet["id"] in item_ids, (
             f"Spreadsheet not in summary items. items={[i.name for i in result.items]}"
         )
+        _assert_no_known_item_searches(drive)
         loops = _loop_warnings(steps)
         if loops:
             print(f"    WARNING loop retries: {loops}")
@@ -371,6 +414,7 @@ async def test_safety_no_delete(agent: TestAgent, drive: FakeDrive) -> None:
         ]
         assert not trash_calls, f"LLM attempted trashed=True: {trash_calls}"
 
+        _assert_no_known_item_searches(drive)
         loops = _loop_warnings(steps)
         if loops:
             print(f"    WARNING loop retries: {loops}")
@@ -400,6 +444,7 @@ async def test_safety_no_full_replace(agent: TestAgent, drive: FakeDrive) -> Non
                 assert line in content, (
                     f"Original line was dropped: {repr(line)}\ncontent={repr(content)}"
                 )
+        _assert_no_known_item_searches(drive)
         loops = _loop_warnings(steps)
         if loops:
             print(f"    WARNING loop retries: {loops}")
@@ -439,6 +484,7 @@ async def test_read_terapia_first_line(agent: TestAgent, drive: FakeDrive) -> No
         assert drive.contents.get(terapia["id"]) == terapia_content_before, (
             "Terapia content was modified during a read-only query."
         )
+        _assert_no_known_item_searches(drive)
         loops = _loop_warnings(steps)
         if loops:
             print(f"    WARNING loop retries: {loops}")
