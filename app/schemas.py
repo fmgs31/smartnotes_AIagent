@@ -20,6 +20,7 @@ class InboundRequest(BaseModel):
 
 class NextStepPlan(BaseModel):
     done: bool
+    last_step_check: str = ""
     tool_name: str = ""
     arguments: Dict[str, Any] = Field(default_factory=dict)
     explanation: str | None = None
@@ -32,6 +33,11 @@ class NextStepPlan(BaseModel):
         if v == "" or v is None:
             return {}
         return v
+
+    @field_validator("last_step_check", "tool_name", "summary", mode="before")
+    @classmethod
+    def _coerce_none_to_empty_string(cls, v: Any) -> Any:
+        return "" if v is None else v
 
 
 class ExecutedToolStep(BaseModel):

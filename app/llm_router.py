@@ -21,6 +21,7 @@ class Planner:
         "additionalProperties": False,
         "properties": {
             "done": {"type": "boolean"},
+            "last_step_check": {"type": "string"},
             "tool_name": {"type": "string"},
             "arguments": {"type": "object", "additionalProperties": True},
             "explanation": {"type": "string"},
