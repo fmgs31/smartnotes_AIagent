@@ -2,7 +2,8 @@
     "servers": [
         {
             "id": "test-server",
-            "url": "http://test-server/mcp/"
+            "url": "http://test-server/mcp/",
+            "url_env_var_name": "GOOGLE_WORKSPACE_URL"
         }
     ]
 }

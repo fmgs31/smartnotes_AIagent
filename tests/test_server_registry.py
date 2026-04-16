@@ -66,8 +66,8 @@ class TestLoadFromFile:
             ServerRegistry.load_from_file(path)
 
     def test_url_overridden_by_env_var(self, write_servers, monkeypatch):
-        monkeypatch.setenv("SRV_URL", "http://override/mcp/")
-        path = write_servers({"servers": [{"id": "srv", "url": "http://original/mcp/"}]})
+        monkeypatch.setenv("SERVER_URL_X", "http://override/mcp/")
+        path = write_servers({"servers": [{"id": "srvx", "url": "http://original/mcp/", "url_env_var_name": "SERVER_URL_X"}]})
         registry = ServerRegistry.load_from_file(path)
         assert registry.all()[0].url == "http://override/mcp/"
 
