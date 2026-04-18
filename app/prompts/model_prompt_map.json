@@ -1,0 +1,9 @@
+{
+  "default_model": "gpt-5-nano",
+  "models": {
+    "gpt-5-nano": {"full_name": "gpt-5-nano-2025-08-07", "vendor":"open_ai", "prompt_file":"next_step_system_prompt_5_nano.txt"},
+    "gpt-5.4-nano": {"full_name": "gpt-5.4-nano-2026-03-17", "vendor":"open_ai", "prompt_file":"next_step_system_prompt_5_4_nano.txt"},
+    "gpt-5-nano-compact": {"full_name": "gpt-5-nano-2025-08-07", "vendor":"open_ai", "prompt_file":"next_step_system_prompt_compact.txt"},
+    "gpt-5.4-nano-compact": {"full_name": "gpt-5.4-nano-2026-03-17", "vendor":"open_ai", "prompt_file":"next_step_system_prompt_compact.txt"}
+  }
+}

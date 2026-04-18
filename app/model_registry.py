@@ -1,0 +1,100 @@
+import json
+from pathlib import Path
+from typing import Any, Callable
+
+from openai import AsyncOpenAI
+
+
+def _extract_openai_output_text(resp) -> str:
+    if getattr(resp, "output_text", None):
+        return resp.output_text
+    for item in getattr(resp, "output", []) or []:
+        for c in getattr(item, "content", []) or []:
+            if getattr(c, "type", None) == "output_text":
+                return c.text
+    raise RuntimeError("Could not extract output_text from response")
+
+
+def _make_openai_complete(full_name: str) -> Callable:
+    client = AsyncOpenAI()
+
+    async def _call(*, input: list[dict], schema: dict) -> str:
+        resp = await client.responses.create(
+            model=full_name,
+            input=input,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "response_schema",
+                    "strict": False,
+                    "schema": schema,
+                }
+            },
+        )
+        return _extract_openai_output_text(resp)
+
+    return _call
+
+
+# Vendor name -> factory: (full_name: str) -> async callable(*, input, schema) -> str
+# Add an entry here when introducing a new vendor.
+_CLIENT_FACTORIES: dict[str, Callable[[str], Callable]] = {
+    "open_ai": _make_openai_complete,
+}
+
+
+class ResolvedModel:
+    """Everything needed to make one LLM call: name, prompt, and a vendor-agnostic complete callable."""
+
+    def __init__(self, *, full_name: str, prompt: str, vendor: str, complete_fn: Callable):
+        self.full_name = full_name
+        self.prompt = prompt
+        self.vendor = vendor
+        self._complete_fn = complete_fn
+
+    async def complete(self, *, input: list[dict], schema: dict) -> str:
+        return await self._complete_fn(input=input, schema=schema)
+
+
+class ModelRegistry:
+    """Resolves a model prefix to its vendor API ID, system prompt, and complete callable."""
+
+    def __init__(self, *, map_path: str | Path, prompts_folder: str | Path):
+        prompts_folder = Path(prompts_folder)
+        prompt_map = json.loads(Path(map_path).read_text(encoding="utf-8"))
+        if "default_model" not in prompt_map or "models" not in prompt_map:
+            raise ValueError("model prompt map must define 'default_model' and 'models'")
+        models: dict[str, dict] = prompt_map["models"]
+        for name, attrs in models.items():
+            missing = {"full_name", "vendor", "prompt_file"} - attrs.keys()
+            if missing:
+                raise ValueError(f"Model '{name}' missing keys: {sorted(missing)}")
+            if attrs["vendor"] not in _CLIENT_FACTORIES:
+                raise ValueError(
+                    f"Model '{name}' uses unknown vendor '{attrs['vendor']}'. "
+                    f"Known vendors: {sorted(_CLIENT_FACTORIES)}"
+                )
+
+        self._default_model: str = prompt_map["default_model"]
+        self._models: dict[str, ResolvedModel] = {
+            name: ResolvedModel(
+                full_name=attrs["full_name"],
+                prompt=(prompts_folder / attrs["prompt_file"]).read_text(encoding="utf-8").strip(),
+                vendor=attrs["vendor"],
+                complete_fn=_CLIENT_FACTORIES[attrs["vendor"]](attrs["full_name"]),
+            )
+            for name, attrs in models.items()
+        }
+
+        if self._default_model not in self._models:
+            raise ValueError(
+                f"default_model {self._default_model!r} is not a registered model key"
+            )
+
+    def resolve(self, model_key: str | None) -> ResolvedModel:
+        key = model_key if model_key is not None else self._default_model
+        if key not in self._models:
+            raise ValueError(
+                f"Model {key!r} is not registered. Available: {list(self._models)}"
+            )
+        return self._models[key]

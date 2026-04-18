@@ -57,8 +57,8 @@ class TestHandleText:
         svc._tool_id_to_schema = {"test-server.search": {}}
 
         mock_plan.plan_next_step.side_effect = [
-            NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "test"}),
-            NextStepPlan(done=True, summary="Found 3 documents."),
+            NextStepPlan(done=False, next_tool="test-server.search", arguments={"q": "test"}),
+            NextStepPlan(done=True, full_task_summary="Found 3 documents."),
         ]
 
         procedure, steps = await svc.execute(text="find docs", token="tok")
@@ -82,9 +82,9 @@ class TestHandleText:
         svc._tool_id_to_schema = {"test-server.search": {}, "test-server.create": {}}
 
         mock_plan.plan_next_step.side_effect = [
-            NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "a"}),
-            NextStepPlan(done=False, tool_name="test-server.create", arguments={"title": "b"}),
-            NextStepPlan(done=True, summary="Searched and created."),
+            NextStepPlan(done=False, next_tool="test-server.search", arguments={"q": "a"}),
+            NextStepPlan(done=False, next_tool="test-server.create", arguments={"title": "b"}),
+            NextStepPlan(done=True, full_task_summary="Searched and created."),
         ]
 
         procedure, steps = await svc.execute(text="search and create", token="tok")
@@ -99,7 +99,7 @@ class TestHandleText:
         svc, servers = _make_agent(planner=mock_plan)
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
-        mock_plan.plan_next_step.return_value = NextStepPlan(done=True, summary="Nothing to do.")
+        mock_plan.plan_next_step.return_value = NextStepPlan(done=True, full_task_summary="Nothing to do.")
         mock_mcp_cls.return_value = _mcp_mock()
 
         result, steps = await svc.execute(text="do something", token="tok")
@@ -112,8 +112,8 @@ class TestHandleText:
         svc, servers = _make_agent(planner=mock_plan)
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
-        same = NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "x"})
-        mock_plan.plan_next_step.side_effect = [same, same, NextStepPlan(done=True, summary="partial")]
+        same = NextStepPlan(done=False, next_tool="test-server.search", arguments={"q": "x"})
+        mock_plan.plan_next_step.side_effect = [same, same, NextStepPlan(done=True, full_task_summary="partial")]
         mock_mcp_cls.return_value = _mcp_mock()
 
         procedure, steps = await svc.execute(text="loop me", token="tok")
@@ -128,8 +128,8 @@ class TestHandleText:
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
         mock_plan.plan_next_step.side_effect = [
-            NextStepPlan(done=False, tool_name="test-server.nonexistent", arguments={}),
-            NextStepPlan(done=True, summary="failed"),
+            NextStepPlan(done=False, next_tool="test-server.nonexistent", arguments={}),
+            NextStepPlan(done=True, full_task_summary="failed"),
         ]
         mock_mcp_cls.return_value = _mcp_mock()
 
@@ -148,9 +148,9 @@ class TestHandleText:
         }
         svc._tool_id_to_schema = {"test-server.search": {}, "test-server.create": {}}
         mock_plan.plan_next_step.side_effect = [
-            NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "x"}),
-            NextStepPlan(done=False, tool_name="test-server.create", arguments={"title": "y"}),
-            NextStepPlan(done=True, summary="partial"),
+            NextStepPlan(done=False, next_tool="test-server.search", arguments={"q": "x"}),
+            NextStepPlan(done=False, next_tool="test-server.create", arguments={"title": "y"}),
+            NextStepPlan(done=True, full_task_summary="partial"),
         ]
         failing_mock = _mcp_mock()
         failing_mock.call_tool = AsyncMock(side_effect=[RuntimeError("MCP server error"), "created"])
@@ -174,8 +174,8 @@ class TestHandleText:
         svc._tool_id_to_schema = {"test-server.search": {"type": "object", "properties": {}}}
 
         mock_plan.plan_next_step.side_effect = [
-            NextStepPlan(done=False, tool_name="test-server.search", arguments={}),
-            NextStepPlan(done=True, summary="done"),
+            NextStepPlan(done=False, next_tool="test-server.search", arguments={}),
+            NextStepPlan(done=True, full_task_summary="done"),
         ]
 
         await svc.execute(text="find docs", token="tok")
@@ -194,7 +194,7 @@ class TestHandleText:
         svc._tool_id_to_schema = {"test-server.search": {}}
         # Always returns a different tool call (different args) — never done
         mock_plan.plan_next_step.side_effect = [
-            NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": str(i)})
+            NextStepPlan(done=False, next_tool="test-server.search", arguments={"q": str(i)})
             for i in range(svc.max_plan_steps)
         ]
         mock_mcp_cls.return_value = _mcp_mock(call_result="result")
@@ -405,8 +405,8 @@ class TestStream:
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
         svc._tool_id_to_schema = {"test-server.search": {}}
         mock_plan.plan_next_step.side_effect = [
-            NextStepPlan(done=False, tool_name="test-server.search", arguments={"q": "x"}),
-            NextStepPlan(done=True, summary="Found results."),
+            NextStepPlan(done=False, next_tool="test-server.search", arguments={"q": "x"}),
+            NextStepPlan(done=True, full_task_summary="Found results."),
         ]
         mock_mcp_cls.return_value = _mcp_mock()
 

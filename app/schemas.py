@@ -21,10 +21,10 @@ class InboundRequest(BaseModel):
 class NextStepPlan(BaseModel):
     done: bool
     last_step_check: str = ""
-    tool_name: str = ""
+    next_tool: str = ""
     arguments: Dict[str, Any] = Field(default_factory=dict)
     explanation: str | None = None
-    summary: str = ""
+    full_task_summary: str = ""
     items: list["DriveItem"] = Field(default_factory=list)
 
     @field_validator("arguments", mode="before")
@@ -34,7 +34,7 @@ class NextStepPlan(BaseModel):
             return {}
         return v
 
-    @field_validator("last_step_check", "tool_name", "summary", mode="before")
+    @field_validator("last_step_check", "next_tool", "full_task_summary", mode="before")
     @classmethod
     def _coerce_none_to_empty_string(cls, v: Any) -> Any:
         return "" if v is None else v

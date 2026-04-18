@@ -117,7 +117,7 @@ class Agent:
 
         if done_plan:
             result = ProcedureSummary(
-                text=done_plan.summary,
+                text=done_plan.full_task_summary,
                 items=done_plan.items,
             )
         else:
@@ -182,7 +182,7 @@ class Agent:
                 async for obj in self._handle(request_ctxt):
                     if isinstance(obj, tuple):
                         plan, _executed = obj
-                        d = plan.model_dump(include={"tool_name", "arguments", "explanation"})
+                        d = plan.model_dump(include={"next_tool", "arguments", "explanation"})
                         d["type"] = EventType.STEP_PLANNED
                     elif isinstance(obj, ProcedureSummary):
                         d = obj.model_dump()
@@ -242,7 +242,7 @@ class Agent:
         seen_signatures: set[tuple[str, str]],
     ) -> ExecutedToolStep:
         """Resolve and call the tool chosen by the planner. Returns the executed step."""
-        tool_name = next_step.tool_name
+        tool_name = next_step.next_tool
         arguments = next_step.arguments or {}
         rationale = next_step.explanation or ""
         try:
@@ -272,7 +272,7 @@ class Agent:
         planning_context.append({
             "step": step_idx,
             "server_id": server_id,
-            "tool_name": tool_name,
+            "next_tool": tool_name,
             "arguments": arguments,
             "result_summary": result_summary,
         })

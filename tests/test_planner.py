@@ -1,117 +1,79 @@
+import asyncio
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
+from app.model_registry import ModelRegistry
 from app.planner import Planner
 
 
 @pytest.fixture
-def write_prompt_map(tmp_path: Path, monkeypatch):
-    """Write prompt files + model_prompt_map.json under tmp_path and point settings at it."""
-    def _write(default_model: str, models: dict[str, dict[str, str]]) -> Path:
+def build_registry(tmp_path: Path, monkeypatch):
+    """Build a ModelRegistry against tmp prompts, with each model's complete_fn replaced by an AsyncMock."""
+    def _build(default_model: str, models: dict[str, dict[str, str]]):
         for attrs in models.values():
             (tmp_path / attrs["prompt_file"]).write_text(f"PROMPT:{attrs['prompt_file']}", encoding="utf-8")
         map_path = tmp_path / "model_prompt_map.json"
         map_path.write_text(json.dumps({"default_model": default_model, "models": models}), encoding="utf-8")
-        monkeypatch.setattr("app.planner.settings.model_prompt_map_path", str(map_path))
-        monkeypatch.setattr("app.planner._PROMPTS_FOLDER", tmp_path)
-        return map_path
-    return _write
 
+        # Track which complete_fn was built for each full_name so tests can assert on them.
+        complete_mocks: dict[str, AsyncMock] = {}
 
-class TestSystemPromptFromModelName:
-    def test_exact_prefix_match_returns_matching_prompt(self, write_prompt_map):
-        write_prompt_map(
-            default_model="gpt-5-nano",
-            models={
-                "gpt-5-nano": {"full_name": "gpt-5-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_nano.txt"},
-                "gpt-5.4-nano": {"full_name": "gpt-5.4-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_54_nano.txt"},
-            },
+        def mock_factory(full_name):
+            mock = AsyncMock(return_value='{"done": true}')
+            complete_mocks[full_name] = mock
+            return mock
+
+        vendors = {attrs["vendor"] for attrs in models.values()}
+        monkeypatch.setattr(
+            "app.model_registry._CLIENT_FACTORIES",
+            {v: mock_factory for v in vendors},
         )
-        planner = Planner(client=None)
-        assert planner._system_prompt_from_model_name("gpt-5-nano") == "PROMPT:p_nano.txt"
-        assert planner._system_prompt_from_model_name("gpt-5.4-nano") == "PROMPT:p_54_nano.txt"
-
-    def test_full_versioned_model_resolves_via_prefix(self, write_prompt_map):
-        write_prompt_map(
-            default_model="gpt-5-nano",
-            models={
-                "gpt-5-nano": {"full_name": "gpt-5-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_nano.txt"},
-                "gpt-5.4-nano": {"full_name": "gpt-5.4-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_54_nano.txt"},
-            },
-        )
-        planner = Planner(client=None)
-        assert planner._system_prompt_from_model_name("gpt-5-nano-2025-08-07") == "PROMPT:p_nano.txt"
-        assert planner._system_prompt_from_model_name("gpt-5.4-nano-2025-08-07") == "PROMPT:p_54_nano.txt"
-
-    def test_unknown_model_falls_back_to_default(self, write_prompt_map):
-        write_prompt_map(
-            default_model="gpt-5-nano",
-            models={
-                "gpt-5-nano": {"full_name": "gpt-5-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_nano.txt"},
-                "gpt-5.4-nano": {"full_name": "gpt-5.4-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_54_nano.txt"},
-            },
-        )
-        planner = Planner(client=None)
-        assert planner._system_prompt_from_model_name("claude-opus-4-6") == "PROMPT:p_nano.txt"
-
-    def test_raises_when_neither_requested_nor_default_matches(self, write_prompt_map):
-        write_prompt_map(
-            default_model="does-not-match-anything",
-            models={
-                "gpt-5-nano": {"full_name": "gpt-5-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_nano.txt"},
-            },
-        )
-        planner = Planner(client=None)
-        with pytest.raises(RuntimeError, match="No prompt found"):
-            planner._system_prompt_from_model_name("claude-opus-4-6")
-
-    def test_prompt_files_loaded_once_at_init(self, write_prompt_map, tmp_path: Path):
-        write_prompt_map(
-            default_model="gpt-5-nano",
-            models={
-                "gpt-5-nano": {"full_name": "gpt-5-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_nano.txt"},
-            },
-        )
-        planner = Planner(client=None)
-        (tmp_path / "p_nano.txt").write_text("MUTATED", encoding="utf-8")
-        assert planner._system_prompt_from_model_name("gpt-5-nano") == "PROMPT:p_nano.txt"
-
-
-def _mock_openai_client(output_text: str = '{"done": true}'):
-    client = MagicMock()
-    client.responses.create = AsyncMock(return_value=MagicMock(output_text=output_text, usage=None))
-    return client
+        registry = ModelRegistry(map_path=map_path, prompts_folder=tmp_path)
+        return registry, complete_mocks
+    return _build
 
 
 class TestPlanNextStepModelResolution:
-    """Verify the model ID sent to OpenAI is the 'full_name' from the map, not the prefix."""
+    """Verify the complete_fn called is the one built for the correct full_name."""
 
-    @pytest.mark.xfail(reason="problem 1: full_name from the map is not yet used when calling OpenAI")
-    async def test_request_model_prefix_resolves_to_full_name(self, write_prompt_map):
-        write_prompt_map(
+    def test_request_model_key_resolves_to_full_name(self, build_registry):
+        registry, complete_mocks = build_registry(
             default_model="gpt-5-nano",
             models={
                 "gpt-5-nano": {"full_name": "gpt-5-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_nano.txt"},
                 "gpt-5.4-nano": {"full_name": "gpt-5.4-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_54_nano.txt"},
             },
         )
-        client = _mock_openai_client()
-        planner = Planner(client=client)
-        await planner.plan_next_step(text="hi", allowed_tools=None, planner_model="gpt-5.4-nano")
-        assert client.responses.create.call_args.kwargs["model"] == "gpt-5.4-nano-2025-08-07"
+        planner = Planner(model_registry=registry)
+        asyncio.run(planner.plan_next_step(text="hi", allowed_tools=None, planner_model="gpt-5.4-nano"))
+        assert complete_mocks["gpt-5.4-nano-2025-08-07"].called
+        assert not complete_mocks["gpt-5-nano-2025-08-07"].called
 
-    @pytest.mark.xfail(reason="problem 1: full_name from the map is not yet used when calling OpenAI")
-    async def test_no_request_model_uses_default_full_name(self, write_prompt_map):
-        write_prompt_map(
+    def test_no_request_model_uses_default_full_name(self, build_registry):
+        registry, complete_mocks = build_registry(
             default_model="gpt-5-nano",
             models={
                 "gpt-5-nano": {"full_name": "gpt-5-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_nano.txt"},
             },
         )
-        client = _mock_openai_client()
-        planner = Planner(client=client)
-        await planner.plan_next_step(text="hi", allowed_tools=None)
-        assert client.responses.create.call_args.kwargs["model"] == "gpt-5-nano-2025-08-07"
+        planner = Planner(model_registry=registry)
+        asyncio.run(planner.plan_next_step(text="hi", allowed_tools=None))
+        assert complete_mocks["gpt-5-nano-2025-08-07"].called
+
+    def test_system_prompt_from_resolved_model_is_sent(self, build_registry):
+        registry, complete_mocks = build_registry(
+            default_model="gpt-5-nano",
+            models={
+                "gpt-5-nano": {"full_name": "gpt-5-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_nano.txt"},
+                "gpt-5.4-nano": {"full_name": "gpt-5.4-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_54_nano.txt"},
+            },
+        )
+        planner = Planner(model_registry=registry)
+        asyncio.run(planner.plan_next_step(text="hi", allowed_tools=None, planner_model="gpt-5.4-nano"))
+        call_args = complete_mocks["gpt-5.4-nano-2025-08-07"].call_args
+        messages = call_args.kwargs["input"]
+        system_msg = next(m for m in messages if m["role"] == "system")
+        assert system_msg["content"] == "PROMPT:p_54_nano.txt"

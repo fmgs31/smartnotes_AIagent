@@ -2,16 +2,11 @@ import json
 import logging
 import time
 from datetime import date
-from pathlib import Path
 
-from openai import AsyncOpenAI
-
-from app.config import settings
+from app.model_registry import ModelRegistry
 from app.schemas import NextStepPlan
 
 log = logging.getLogger("planner")
-
-_PROMPTS_FOLDER = Path(__file__).resolve().parent / "prompts"
 
 
 class Planner:
@@ -23,10 +18,10 @@ class Planner:
         "properties": {
             "done": {"type": "boolean"},
             "last_step_check": {"type": "string"},
-            "tool_name": {"type": "string"},
+            "next_tool": {"type": "string"},
             "arguments": {"type": "object", "additionalProperties": True},
             "explanation": {"type": "string"},
-            "summary": {"type": "string"},
+            "full_task_summary": {"type": "string"},
             "items": {
                 "type": "array",
                 "items": {
@@ -45,28 +40,8 @@ class Planner:
         "required": ["done"],
     }
 
-    def __init__(self, client: AsyncOpenAI):
-        self._client = client
-        prompt_map = json.loads(Path(settings.model_prompt_map_path).read_text(encoding="utf-8"))
-        if "default_model" not in prompt_map or "models" not in prompt_map:
-            raise ValueError("model_prompt_map.json must define 'default_model' and 'models'")
-        self._models_mapping: dict[str, dict] = prompt_map["models"]
-        for model_name, attrs in self._models_mapping.items():
-            missing = {"full_name", "vendor", "prompt_file"} - attrs.keys()
-            if missing:
-                raise ValueError(f"Model '{model_name}' missing keys: {sorted(missing)}")
-        self._default_model: str = prompt_map["default_model"]
-        self._model_prompt_map: dict[str, str] = {
-            model_name: (_PROMPTS_FOLDER / attrs["prompt_file"]).read_text(encoding="utf-8").strip()
-            for model_name, attrs in self._models_mapping.items()
-        }
-
-    def _system_prompt_from_model_name(self, model: str) -> str:
-        for candidate in (model, self._default_model):
-            for prefix, prompt in self._model_prompt_map.items():
-                if candidate.startswith(prefix):
-                    return prompt
-        raise RuntimeError(f"No prompt found for model {model!r} or default {self._default_model!r}")
+    def __init__(self, model_registry: ModelRegistry):
+        self._model_registry = model_registry
 
     async def plan_next_step(
         self,
@@ -105,55 +80,23 @@ class Planner:
         log.debug("plan_next_step user prompt:\n%s", core_context)
 
         t0 = time.perf_counter()
-        resolved_model = planner_model or self._default_model
-        resp = await self._client.responses.create(
-            model=resolved_model,
+        model = self._model_registry.resolve(planner_model)
+        resp_text = await model.complete(
             input=[
-                {"role": "system", "content": self._system_prompt_from_model_name(resolved_model)},
+                {"role": "system", "content": model.prompt},
                 {"role": "user", "content": user},
             ],
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "next_step_plan",
-                    "strict": False,
-                    "schema": self._NEXT_STEP_PLAN_SCHEMA,
-                }
-            },
+            schema=self._NEXT_STEP_PLAN_SCHEMA,
         )
         log.info("plan_next_step took %.2fs", time.perf_counter() - t0)
-        self._log_usage(resp, "plan_next_step")
-        data = json.loads(self._extract_output_text(resp))
+        data = json.loads(resp_text)
         plan = NextStepPlan(**data)
         log.info(f"Data: {data}")
         log.info(
-            f"Planner output: done={plan.done} tool_name={plan.tool_name} "
+            f"Planner output: done={plan.done} tool_name={plan.next_tool} "
             f"has_arguments={bool(plan.arguments)} last_step_check={plan.last_step_check!r}"
         )
         return plan
-
-    @staticmethod
-    def _log_usage(resp, call_name: str) -> None:
-        usage = getattr(resp, "usage", None)
-        if usage:
-            log.info(
-                "%s tokens — input: %s, output: %s, total: %s",
-                call_name,
-                getattr(usage, "input_tokens", "?"),
-                getattr(usage, "output_tokens", "?"),
-                getattr(usage, "total_tokens", "?"),
-            )
-
-    @staticmethod
-    def _extract_output_text(resp) -> str:
-        """Extract the text output from an OpenAI Responses API response object."""
-        if getattr(resp, "output_text", None):
-            return resp.output_text
-        for item in getattr(resp, "output", []) or []:
-            for c in getattr(item, "content", []) or []:
-                if getattr(c, "type", None) == "output_text":
-                    return c.text
-        raise RuntimeError("Could not extract output_text from response")
 
     @staticmethod
     def _summarize_executed_steps(executed_steps: list[dict]) -> str:

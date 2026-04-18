@@ -1,6 +1,7 @@
 ﻿import json
 import logging
 from io import BytesIO
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
@@ -11,6 +12,7 @@ from app.config import settings
 from app.agent_memory_firestore import FirestoreAgentMemory
 from google.cloud.firestore_v1.async_client import AsyncClient
 from app.error_mapping import map_exception_to_http
+from app.model_registry import ModelRegistry
 from app.planner import Planner
 from app.logging_config import configure_app_logging
 from app.schemas import EventType, InboundRequest
@@ -40,7 +42,11 @@ registry = ServerRegistry.load_from_file(settings.servers_config_path)
 for _srv in registry.all():
     log.info("Registered MCP server: id=%s url=%s", _srv.id, _srv.url)
 
-planner = Planner(client=openai_client, model=settings.openai_model)
+model_registry = ModelRegistry(
+    map_path=settings.model_prompt_map_path,
+    prompts_folder=Path(__file__).resolve().parent / "prompts",
+)
+planner = Planner(model_registry=model_registry)
 auth = Auth(api_key=settings.app_api_key, allowed_emails=load_allowed_emails())
 agent_memory = FirestoreAgentMemory(AsyncClient(project=settings.firestore_project)) if settings.firestore_enabled else None
 agent = Agent(

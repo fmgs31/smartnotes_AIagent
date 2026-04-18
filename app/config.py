@@ -6,13 +6,17 @@ class Settings(BaseSettings):
 
     # OpenAI
     openai_api_key: str
-    # openai_model: str = "gpt-5-mini-2025-08-07"
-    openai_model: str = "gpt-5-nano-2025-08-07"
-    # openai_model: str = "gpt-5-mini-2025-08-07"
     
 
     # Servers config
     servers_config_path: str = "servers/servers.json"
+
+    # Planner prompt map: JSON file of the form
+    #   { "default_model": "<prefix>",
+    #     "models": { "<prefix>": {"full_name": "...", "vendor": "...", "prompt_file": "..."} } }
+    # The resolved model is matched against "models" keys via str.startswith; if no entry
+    # matches, the prefix under "default_model" is used the same way.
+    model_prompt_map_path: str = "app/prompts/model_prompt_map.json"
 
     # App-level API key (gates access from mobile app)
     app_api_key: str
