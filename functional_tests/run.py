@@ -112,7 +112,11 @@ async def main() -> None:
         for c in calls:
             print(f"       [{c['step']}] {c['tool']}  {c['args']}")
 
-    planner = make_planner(args.model)
+    planner = make_planner()
+    resolved = planner._model_registry.resolve(args.model)
+    prompt_first_line = resolved.prompt.splitlines()[0]
+    print(f"model: {args.model}  →  {resolved.full_name}")
+    print(f"prompt: {prompt_first_line}")
     drive   = FakeDrive(DRIVE_ROOT)
 
     passed = failed = errored = 0
@@ -123,7 +127,7 @@ async def main() -> None:
         print(f"      {tc.description}")
 
         # Fresh agent per test (clears tool-discovery cache)
-        agent = TestAgent(fake_drive=drive, planner=planner, max_plan_steps=10)
+        agent = TestAgent(fake_drive=drive, planner=planner, max_plan_steps=10, planner_model=args.model)
         drive.clear_calls()
 
         t0 = time.perf_counter()

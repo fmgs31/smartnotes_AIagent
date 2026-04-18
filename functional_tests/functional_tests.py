@@ -6,14 +6,12 @@ It should raise AssertionError on failure, any other Exception on error.
 The test must restore drive state via snapshot/restore itself.
 """
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Awaitable
 
-from openai import AsyncOpenAI
-
 from app.agent import Agent
+from app.model_registry import ModelRegistry
 from app.planner import Planner
 from app.schemas import ExecutedToolStep, ProcedureSummary
 from app.server_registry import ServerConfig, ServerRegistry
@@ -45,11 +43,12 @@ class TestAgent(Agent):
     Everything else (Planner, tool discovery, planning loop) runs as normal.
     """
 
-    def __init__(self, fake_drive: FakeDrive, planner: Planner, max_plan_steps: int = 10):
+    def __init__(self, fake_drive: FakeDrive, planner: Planner, max_plan_steps: int = 10, planner_model: str | None = None):
         cfg = _load_server_config()
         registry = ServerRegistry(servers={cfg.id: cfg})
         super().__init__(registry=registry, planner=planner, max_plan_steps=max_plan_steps)
         self._fake_drive = fake_drive
+        self.planner_model = planner_model
 
     async def _get_or_open_client(self, server, request_ctxt):
         existing = request_ctxt.clients.get(server.id)
@@ -65,9 +64,11 @@ class TestAgent(Agent):
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def make_planner(model: str) -> Planner:
-    client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    return Planner(client=client, model=model)
+def make_planner() -> Planner:
+    map_path = Path(__file__).resolve().parent.parent / "app" / "prompts" / "model_prompt_map.json"
+    prompts_folder = Path(__file__).resolve().parent.parent / "app" / "prompts"
+    model_registry = ModelRegistry(map_path=map_path, prompts_folder=prompts_folder)
+    return Planner(model_registry=model_registry)
 
 
 async def run_agent(
@@ -84,6 +85,7 @@ async def run_agent(
         token="fake-token",
         user_guidelines=guidelines,
         known_drive_items=known_items,
+        planner_model=agent.planner_model,
     )
     assert result is not None, "Agent returned no ProcedureSummary"
     return result, steps
@@ -154,10 +156,13 @@ async def test_append_terapia(agent: TestAgent, drive: FakeDrive) -> None:
         terapia = drive.find_by_name("Terapia", MIME_DOC)
         assert terapia, "Terapia document not found in drive."
         content = drive.contents.get(terapia["id"], "")
-        assert TERAPIA_INITIAL_CONTENT.split("\n")[0] in content, (
-            f"Original content was lost.\ncontent={repr(content)}"
+        # Original content must be fully intact at the start (not garbled by mid-doc insert)
+        assert content.startswith(TERAPIA_INITIAL_CONTENT), (
+            f"Original content was modified or inserted into.\n"
+            f"expected prefix: {repr(TERAPIA_INITIAL_CONTENT)}\n"
+            f"content: {repr(content)}"
         )
-        # Content must appear exactly once — no duplicate or split inserts
+        # New content must appear exactly once — no duplicate or split inserts
         occurrences = content.count("miedo al éxito")
         assert occurrences == 1, (
             f"Expected new content to appear exactly once, got {occurrences}.\ncontent={repr(content)}"
