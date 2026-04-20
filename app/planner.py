@@ -18,6 +18,7 @@ class Planner:
         "properties": {
             "done": {"type": "boolean"},
             "last_step_check": {"type": "string"},
+            "pending_actions": {"type": "string"},
             "next_tool": {"type": "string"},
             "arguments": {"type": "object", "additionalProperties": True},
             "explanation": {"type": "string"},
@@ -57,15 +58,26 @@ class Planner:
     ) -> NextStepPlan:
         """Ask the LLM for the next step in a multi-step plan."""
         schemas_json = json.dumps(tool_schemas or {}, ensure_ascii=False)
-        executed_json = self._summarize_executed_steps(executed_steps or [])
+
+        # history = steps[:-1] if steps else []
+        history_section = (
+            f"Earlier steps:\n{json.dumps(executed_steps, ensure_ascii=False)}\n\n"
+        ) if executed_steps else ""
+        last_step = executed_steps[-1] if executed_steps else None
+        last_step_section = (
+            f"Most recent step (step {last_step['step']}):\n"
+            f"tool={last_step['next_tool']}  result={last_step['result_summary']!r}\n\n"
+        ) if last_step else ""
+
         items_str = json.dumps(known_drive_items, ensure_ascii=False) if known_drive_items else None
         drive_items_section = f"Known Drive items:\n{items_str}\n\n" if items_str else ""
         guidelines_section = f"User guidelines:\n{user_guidelines}\n\n" if user_guidelines else ""
         core_context = (
             f"User request:\n{text}\n\n"
             f"{drive_items_section}"
-            f"Remaining execution budget (steps): {remaining_steps}\n\n"
-            f"Executed steps and outputs so far:\n{executed_json}\n\n"
+            # f"Remaining execution budget (steps): {remaining_steps}\n\n"
+            f"{history_section}"
+            f"{last_step_section}"
         )
         user = (
             f"Current date: {date.today().isoformat()}\n\n"
@@ -94,7 +106,8 @@ class Planner:
         log.info(f"Data: {data}")
         log.info(
             f"Planner output: done={plan.done} tool_name={plan.next_tool} "
-            f"has_arguments={bool(plan.arguments)} last_step_check={plan.last_step_check!r}"
+            f"has_arguments={bool(plan.arguments)} last_step_check={plan.last_step_check!r} "
+            f"pending_actions={plan.pending_actions!r}"
         )
         return plan
 

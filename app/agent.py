@@ -230,6 +230,11 @@ class Agent:
             log.info("Step=%s done=true  rationale: %s", step_idx, next_step.explanation or "")
             return next_step, None
 
+        if not next_step.next_tool and not next_step.pending_actions:
+            log.warning("Step=%s model returned done=false with no next_tool and empty pending_actions — treating as done", step_idx)
+            next_step.done = True
+            return next_step, None
+
         executed = await self._execute_step(next_step, step_idx, request_ctxt, planning_context, seen_signatures)
         return next_step, executed
 
@@ -245,8 +250,12 @@ class Agent:
         tool_name = next_step.next_tool
         arguments = next_step.arguments or {}
         rationale = next_step.explanation or ""
+        last_signature = None
+        if planning_context:
+            prev = planning_context[-1]
+            last_signature = (prev["next_tool"], stable_json(prev["arguments"]))
         try:
-            server, real_tool_name = self._resolve_tool(tool_name, arguments, seen_signatures)
+            server, real_tool_name = self._resolve_tool(tool_name, arguments, seen_signatures, last_signature)
         except ValueError as exc:
             log.warning(
                 "Step=%s BLOCKED — %s\n  rationale: %s\n  tool: %s\n  args: %s",
@@ -284,23 +293,42 @@ class Agent:
             mcp_result=result,
         )
 
+    _READ_ONLY_TOOLS = frozenset({
+        "inspect_doc_structure",
+        "get_doc_content",
+        "get_drive_file_content",
+        "list_drive_items",
+        "search_drive_files",
+    })
+
     def _resolve_tool(
         self,
         tool_name: str,
         arguments: dict,
         seen_signatures: set[tuple[str, str]],
+        last_signature: tuple[str, str] | None = None,
     ) -> tuple[ServerConfig, str]:
-        """Look up the planned tool by id, verify it exists, and guard against repeated identical calls."""
+        """Look up the planned tool by id, verify it exists, and guard against repeated identical calls.
+
+        Read-only tools are only blocked if the immediately preceding step was identical (consecutive loop).
+        Mutating tools are blocked on any repetition across the entire session.
+        """
         selected = self._tool_id_to_tool.get(tool_name)
         if selected is None:
             raise ValueError(f"Planned tool '{tool_name}' is not available")
         server, real_tool_name = selected
 
         signature = (tool_name, stable_json(arguments))
-        if signature in seen_signatures:
-            raise ValueError(
-                f"Planner loop detected: repeated step '{tool_name}' with identical arguments"
-            )
+        if real_tool_name in self._READ_ONLY_TOOLS:
+            if signature == last_signature:
+                raise ValueError(
+                    f"Planner loop detected: consecutive repeated step '{tool_name}' with identical arguments"
+                )
+        else:
+            if signature in seen_signatures:
+                raise ValueError(
+                    f"Planner loop detected: repeated step '{tool_name}' with identical arguments"
+                )
         seen_signatures.add(signature)
 
         return server, real_tool_name
@@ -322,7 +350,6 @@ class Agent:
             arguments=arguments,
         )
         result = self._extract_result_text(raw)
-        log.debug("Step=%s took %.2fs result_len=%s", step_idx, time.perf_counter() - t0, len(result))
         return result
 
     async def _ensure_tools_discovered(self, request_ctxt: _RequestContext) -> None:
