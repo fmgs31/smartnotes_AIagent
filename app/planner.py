@@ -16,12 +16,12 @@ class Planner:
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "done": {"type": "boolean"},
             "last_step_check": {"type": "string"},
             "pending_actions": {"type": "string"},
+            "next_tool_explanation": {"type": "string"},
             "next_tool": {"type": "string"},
             "arguments": {"type": "object", "additionalProperties": True},
-            "explanation": {"type": "string"},
+            "done": {"type": "boolean"},
             "full_task_summary": {"type": "string"},
             "items": {
                 "type": "array",

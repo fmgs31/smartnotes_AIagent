@@ -182,7 +182,7 @@ class Agent:
                 async for obj in self._handle(request_ctxt):
                     if isinstance(obj, tuple):
                         plan, _executed = obj
-                        d = plan.model_dump(include={"next_tool", "arguments", "explanation"})
+                        d = plan.model_dump(include={"next_tool", "arguments", "next_tool_explanation"})
                         d["type"] = EventType.STEP_PLANNED
                     elif isinstance(obj, ProcedureSummary):
                         d = obj.model_dump()
@@ -227,7 +227,7 @@ class Agent:
         )
 
         if next_step.done:
-            log.info("Step=%s done=true  rationale: %s", step_idx, next_step.explanation or "")
+            log.info("Step=%s done=true  rationale: %s", step_idx, next_step.next_tool_explanation or "")
             return next_step, None
 
         if not next_step.next_tool and not next_step.pending_actions:
@@ -249,7 +249,7 @@ class Agent:
         """Resolve and call the tool chosen by the planner. Returns the executed step."""
         tool_name = next_step.next_tool
         arguments = next_step.arguments or {}
-        rationale = next_step.explanation or ""
+        rationale = next_step.next_tool_explanation or ""
         last_signature = None
         if planning_context:
             prev = planning_context[-1]

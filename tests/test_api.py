@@ -29,7 +29,7 @@ def _parse_sse(text: str) -> list[dict]:
 
 def _success_stream():
     async def _gen(**kwargs):
-        yield {"type": "step_planned", "tool_name": "test-server.search", "explanation": None, "arguments": {}}
+        yield {"type": "step_planned", "tool_name": "test-server.search", "next_tool_explanation": None, "arguments": {}}
         yield {"type": "result", "text": "Found 3 documents.", "items": [
             {"name": "My Doc", "id": "abc123", "type": "document", "location": "/"}
         ]}

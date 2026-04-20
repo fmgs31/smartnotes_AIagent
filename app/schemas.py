@@ -19,12 +19,12 @@ class InboundRequest(BaseModel):
 
 
 class NextStepPlan(BaseModel):
-    done: bool
     last_step_check: str = ""
     pending_actions: str = ""
+    next_tool_explanation: str | None = None
     next_tool: str = ""
     arguments: Dict[str, Any] = Field(default_factory=dict)
-    explanation: str | None = None
+    done: bool
     full_task_summary: str = ""
     items: list["DriveItem"] = Field(default_factory=list)
 

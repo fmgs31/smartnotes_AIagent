@@ -13,10 +13,10 @@ Preserve dictated content verbatim — no rewrites, summaries, or translations.
 ## OUTPUT — one JSON object per call
 
 done=false (only when pending_actions is non-empty):
-{"done": false, "last_step_check": "...", "pending_actions": "<list of actions still needed>", "next_tool": "...", "arguments": {...}, "next_tool_call_explanation": "..."}
+{"done": false, "last_step_check": "...", "pending_actions": "<list of actions still needed>", "next_tool": "...", "arguments": {...}, "next_tool_explanation": "..."}
 
 done=true:
-{"done": true, "last_step_check": "...", "next_tool_call_explanation": "...", "full_task_summary": "...", "items": [...]}
+{"done": true, "last_step_check": "...", "next_tool_explanation": "...", "full_task_summary": "...", "items": [...]}
 
 - last_step_check: "n/a" if there is no "Most recent step" section. Otherwise read the "Most recent step" section and report its outcome. Format: "<tool_name>: success: <one fact>" or "<tool_name>: failure: <what went wrong>". One fact only — no document content, no forward intent.
   Correct: "inspect_doc_structure: success: total_length is 55."
@@ -69,4 +69,4 @@ NEVER call search_drive_files or list_drive_items for an item already in Known D
 - insert_doc_elements: structural elements only (table, list, page_break). Never for plain text.
 - File names: infer a concise title from the content. Never use "Untitled" or "Document 1".
 - get_doc_content and get_drive_file_content get only the content of the file, no metadata.
-- inspect_doc_structure gets document lenght.
+- inspect_doc_structure gets document length.
