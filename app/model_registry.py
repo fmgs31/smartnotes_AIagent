@@ -1,8 +1,10 @@
+import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 
 
 def _extract_openai_output_text(resp) -> str:
@@ -15,23 +17,50 @@ def _extract_openai_output_text(resp) -> str:
     raise RuntimeError("Could not extract output_text from response")
 
 
+_RETRY_AFTER_RE = re.compile(r"try again in ([\d.]+)(ms|s)", re.IGNORECASE)
+
+
+def _retry_after_seconds(err: RateLimitError) -> float:
+    msg = str(err)
+    m = _RETRY_AFTER_RE.search(msg)
+    if not m:
+        return 1.0
+    value = float(m.group(1))
+    return value / 1000.0 if m.group(2).lower() == "ms" else value
+
+
 def _make_openai_complete(full_name: str) -> Callable:
     client = AsyncOpenAI()
 
     async def _call(*, input: list[dict], schema: dict) -> str:
-        resp = await client.responses.create(
-            model=full_name,
-            input=input,
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "response_schema",
-                    "strict": False,
-                    "schema": schema,
-                }
-            },
-        )
-        return _extract_openai_output_text(resp)
+        # Retry on OpenAI RateLimitError (HTTP 429). TPM is a rolling 1-minute
+        # window, so chatty bursts (looping planner, functional tests) briefly
+        # starve the next call. OpenAI returns the exact wait in the error body
+        # ("try again in Xms/Xs" — observed 128ms–1.86s on the 200k TPM tier).
+        # We honor that hint but floor at 2^attempt s so repeated failures back
+        # off instead of tight-looping against a still-full window.
+        attempt = 0
+        while True:
+            try:
+                resp = await client.responses.create(
+                    model=full_name,
+                    input=input,
+                    text={
+                        "format": {
+                            "type": "json_schema",
+                            "name": "response_schema",
+                            "strict": False,
+                            "schema": schema,
+                        }
+                    },
+                )
+                return _extract_openai_output_text(resp)
+            except RateLimitError as err:
+                attempt += 1
+                if attempt > 5:
+                    raise
+                delay = max(_retry_after_seconds(err), 2.0 ** attempt)
+                await asyncio.sleep(delay)
 
     return _call
 
