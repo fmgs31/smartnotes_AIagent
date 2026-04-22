@@ -34,7 +34,7 @@ os.environ.setdefault("OPENAI_API_KEY",       os.environ.get("OPENAI_API_KEY", "
 os.environ.setdefault("APP_API_KEY",          "functional-test-key")
 os.environ.setdefault("ALLOWED_EMAILS",       "test@example.com")
 
-from functional_tests.fake_drive import FakeDrive, DRIVE_ROOT       # noqa: E402
+from functional_tests.fake_drive import FakeDrive                   # noqa: E402
 from functional_tests.functional_tests import ALL_TESTS, TestAgent, make_planner  # noqa: E402
 
 DEFAULT_MODEL = "gpt-5-nano-2025-08-07"
@@ -117,7 +117,6 @@ async def main() -> None:
     prompt_first_line = resolved.prompt.splitlines()[0]
     print(f"model: {args.model}  →  {resolved.full_name}")
     print(f"prompt: {prompt_first_line}")
-    drive   = FakeDrive(DRIVE_ROOT)
 
     passed = failed = errored = 0
 
@@ -126,9 +125,9 @@ async def main() -> None:
         print(f"TEST  {tc.name}")
         print(f"      {tc.description}")
 
-        # Fresh agent per test (clears tool-discovery cache)
+        # Fresh drive + agent per test — isolated in-memory state, no disk writes
+        drive = FakeDrive()
         agent = TestAgent(fake_drive=drive, planner=planner, max_plan_steps=10, planner_model=args.model)
-        drive.clear_calls()
 
         t0 = time.perf_counter()
         try:

@@ -3,12 +3,11 @@ Unit tests for the fake MCP infrastructure (FakeDrive + FakeMCPClient).
 These run via pytest and never call the real LLM or any external service.
 """
 import pytest
-from pathlib import Path
 
 from functional_tests.fake_drive import (
+    DRIVE_ROOT,
     FakeDrive,
     FakeMCPClient,
-    DRIVE_ROOT,
     MIME_DOC,
     MIME_FOLDER,
     MIME_SHEET,
@@ -21,10 +20,8 @@ from functional_tests.test_config import TERAPIA_INITIAL_CONTENT
 
 @pytest.fixture
 def drive():
-    d = FakeDrive(DRIVE_ROOT)
-    snap = d.snapshot()
-    yield d
-    d.restore(snap)
+    # Each test gets a fresh in-memory copy of the template — no cleanup needed.
+    return FakeDrive()
 
 
 @pytest.fixture
@@ -85,85 +82,191 @@ class TestFakeDriveLoading:
             assert not name.startswith(".")
 
 
-# ─── FakeDrive: snapshot / restore ────────────────────────────────────────────
+# ─── FakeDrive: instance isolation ────────────────────────────────────────────
+#
+# Replaces the old snapshot/restore tests. Each FakeDrive() is a fresh
+# deep-copy of the cached template, so instances are fully independent.
 
-class TestSnapshotRestore:
-    def test_restore_reverts_new_doc(self, drive):
-        snap = drive.snapshot()
-        drive.create_doc("temp_doc", "root", "hello")
-        assert drive.find_by_name("temp_doc") is not None
-        drive.restore(snap)
-        assert drive.find_by_name("temp_doc") is None
+class TestInstanceIsolation:
+    def test_fresh_instance_matches_template(self):
+        d = FakeDrive()
+        terapia = d.find_by_name("Terapia")
+        assert d.contents[terapia["id"]] == TERAPIA_INITIAL_CONTENT
 
-    def test_restore_reverts_content_change(self, drive):
-        snap = drive.snapshot()
-        terapia = drive.find_by_name("Terapia")
-        drive.write_doc(terapia["id"], "replaced content")
-        drive.restore(snap)
-        terapia = drive.find_by_name("Terapia")
-        assert drive.contents[terapia["id"]] == TERAPIA_INITIAL_CONTENT
+    def test_two_instances_have_equal_items(self):
+        d1, d2 = FakeDrive(), FakeDrive()
+        assert set(d1.items.keys()) == set(d2.items.keys())
+        assert d1.contents == d2.contents
+        assert d1.sheets == d2.sheets
 
-    def test_restore_reverts_filesystem(self, drive):
-        snap = drive.snapshot()
-        terapia_path = drive._path_map[drive.find_by_name("Terapia")["id"]]
-        drive.write_doc(drive.find_by_name("Terapia")["id"], "changed")
-        drive.restore(snap)
-        assert terapia_path.read_text(encoding="utf-8") == TERAPIA_INITIAL_CONTENT
+    def test_items_dict_is_not_shared(self):
+        d1, d2 = FakeDrive(), FakeDrive()
+        assert d1.items is not d2.items
+        assert d1.contents is not d2.contents
+        assert d1.sheets is not d2.sheets
 
-    def test_restore_reverts_new_folder(self, drive):
-        snap = drive.snapshot()
-        ideas = drive.find_by_name("Ideas Sueltas")
-        drive.create_folder("new_topic", ideas["id"])
-        drive.restore(snap)
-        assert drive.find_by_name("new_topic") is None
+    def test_new_doc_does_not_leak(self):
+        d1 = FakeDrive()
+        d1.create_doc("temp_doc", "root", "hello")
+        assert d1.find_by_name("temp_doc") is not None
+        d2 = FakeDrive()
+        assert d2.find_by_name("temp_doc") is None
+
+    def test_content_change_does_not_leak(self):
+        d1 = FakeDrive()
+        terapia = d1.find_by_name("Terapia")
+        d1.write_doc(terapia["id"], "replaced content")
+        d2 = FakeDrive()
+        terapia2 = d2.find_by_name("Terapia")
+        assert d2.contents[terapia2["id"]] == TERAPIA_INITIAL_CONTENT
+
+    def test_new_folder_does_not_leak(self):
+        d1 = FakeDrive()
+        ideas = d1.find_by_name("Ideas Sueltas")
+        d1.create_folder("new_topic", ideas["id"])
+        d2 = FakeDrive()
+        assert d2.find_by_name("new_topic") is None
+
+    def test_sheet_mutation_deep_copied(self):
+        # Mutating a row list in place on d1 must not affect d2 — verifies the
+        # nested sheets dict-of-list-of-list is deep-copied, not shallow-copied.
+        d1 = FakeDrive()
+        sheet = d1.find_by_name("Prototipo Juego")
+        d1.sheets[sheet["id"]]["Ideas suelta 1"][0].append("injected")
+
+        d2 = FakeDrive()
+        sheet2 = d2.find_by_name("Prototipo Juego")
+        assert d2.sheets[sheet2["id"]]["Ideas suelta 1"] == [
+            ["idea anterior 1"], ["idea anterior 2"],
+        ]
+
+    def test_item_dict_mutation_deep_copied(self):
+        # Mutating an item dict in place on d1 must not affect d2.
+        d1 = FakeDrive()
+        terapia_id = d1.find_by_name("Terapia")["id"]
+        d1.items[terapia_id]["name"] = "Hacked"
+
+        d2 = FakeDrive()
+        assert d2.items[terapia_id]["name"] == "Terapia"
+
+    def test_call_log_is_per_instance(self):
+        d1, d2 = FakeDrive(), FakeDrive()
+        d1.log_call("t", {"x": 1})
+        assert len(d1.get_calls()) == 1
+        assert len(d2.get_calls()) == 0
+
+    def test_new_ids_do_not_collide_with_template(self):
+        # The _counter in a fresh instance starts above the template's max id,
+        # so newly created items don't clash with pre-existing template items.
+        d = FakeDrive()
+        template_ids = set(d.items.keys())
+        new = d.create_doc("brand_new", "root")
+        assert new["id"] not in template_ids
+
+
+class TestTemplateCaching:
+    def test_template_loaded_once(self):
+        # Template object identity should be stable across instances.
+        FakeDrive()
+        first = FakeDrive._TEMPLATE
+        FakeDrive()
+        second = FakeDrive._TEMPLATE
+        assert first is second
+
+    def test_mutating_instance_does_not_corrupt_template(self):
+        d = FakeDrive()
+        terapia = d.find_by_name("Terapia")
+        d.write_doc(terapia["id"], "CORRUPTED")
+        d.create_doc("junk", "root")
+
+        tmpl = FakeDrive._TEMPLATE
+        assert tmpl["contents"][terapia["id"]] == TERAPIA_INITIAL_CONTENT
+        assert "junk" not in {i["name"] for i in tmpl["items"].values()}
+
+    def test_template_counter_matches_max_template_id(self):
+        # Every item id emitted by the loader is "item_<n>[_slug]"; the cached
+        # counter must be ≥ the highest <n> so future allocations don't collide.
+        FakeDrive()  # ensure template built
+        tmpl = FakeDrive._TEMPLATE
+        max_n = max(
+            int(iid.split("_")[1])
+            for iid in tmpl["items"]
+            if iid.startswith("item_")
+        )
+        assert tmpl["counter"] >= max_n
+
+
+class TestNoDiskWrites:
+    """Mutations must not touch the drive template directory on disk."""
+
+    def _snapshot_dir(self):
+        return {p.relative_to(DRIVE_ROOT): p.stat().st_mtime_ns
+                for p in DRIVE_ROOT.rglob("*") if p.is_file()}
+
+    def test_create_doc_does_not_write_disk(self):
+        before = self._snapshot_dir()
+        d = FakeDrive()
+        d.create_doc("should_not_appear", "root", "x")
+        after = self._snapshot_dir()
+        assert before == after
+        assert not (DRIVE_ROOT / "should_not_appear.txt").exists()
+
+    def test_write_doc_does_not_write_disk(self):
+        before = self._snapshot_dir()
+        d = FakeDrive()
+        terapia = d.find_by_name("Terapia")
+        d.write_doc(terapia["id"], "CHANGED ON DISK?")
+        after = self._snapshot_dir()
+        assert before == after
+        # Confirm the real template file is untouched
+        path = DRIVE_ROOT / "Terapia-Autoanálisis" / "Terapia.txt"
+        assert path.read_text(encoding="utf-8") == TERAPIA_INITIAL_CONTENT
+
+    def test_create_folder_does_not_write_disk(self):
+        before = self._snapshot_dir()
+        d = FakeDrive()
+        d.create_folder("phantom_folder", "root")
+        after = self._snapshot_dir()
+        assert before == after
+        assert not (DRIVE_ROOT / "phantom_folder").exists()
+
+    def test_write_sheet_tab_does_not_write_disk(self):
+        before = self._snapshot_dir()
+        d = FakeDrive()
+        sheet = d.find_by_name("Prototipo Juego")
+        d.write_sheet_tab(sheet["id"], "Ideas suelta 1", [["x", "y"], ["z"]])
+        after = self._snapshot_dir()
+        assert before == after
 
 
 # ─── FakeDrive: mutations ─────────────────────────────────────────────────────
 
 class TestMutations:
-    def test_create_doc_in_memory(self, drive):
+    def test_create_doc(self, drive):
         item = drive.create_doc("my note", "root", "content here")
         assert drive.find_by_name("my note") is not None
         assert drive.contents[item["id"]] == "content here"
 
-    def test_create_doc_on_disk(self, drive, tmp_path):
-        # Use a real temp dir as root to avoid polluting fixture drive
-        d = FakeDrive(tmp_path)
-        item = d.create_doc("test", "root", "hello disk")
-        assert (tmp_path / "test.txt").read_text(encoding="utf-8") == "hello disk"
-
-    def test_create_folder_in_memory(self, drive):
+    def test_create_folder(self, drive):
         item = drive.create_folder("new_folder", "root")
         assert drive.find_by_name("new_folder") is not None
         assert item["mimeType"] == MIME_FOLDER
 
-    def test_create_folder_on_disk(self, drive):
-        drive.create_folder("new_folder", "root")
-        assert (drive.root / "new_folder").is_dir()
+    def test_create_sheet(self, drive):
+        item = drive.create_sheet("my_sheet", "root")
+        assert drive.find_by_name("my_sheet") is not None
+        assert item["mimeType"] == MIME_SHEET
+        assert drive.sheets[item["id"]] == {}
 
     def test_write_doc_updates_content(self, drive):
         terapia = drive.find_by_name("Terapia")
         drive.write_doc(terapia["id"], "new content")
         assert drive.contents[terapia["id"]] == "new content"
 
-    def test_write_doc_updates_file(self, drive):
-        terapia = drive.find_by_name("Terapia")
-        drive.write_doc(terapia["id"], "written to disk")
-        path = drive._path_map[terapia["id"]]
-        assert path.read_text(encoding="utf-8") == "written to disk"
-
     def test_write_sheet_tab(self, drive):
         sheet = drive.find_by_name("Prototipo Juego")
         drive.write_sheet_tab(sheet["id"], "Ideas suelta 1", [["a"], ["b"], ["c"]])
         assert drive.sheets[sheet["id"]]["Ideas suelta 1"] == [["a"], ["b"], ["c"]]
-
-    def test_write_sheet_tab_on_disk(self, drive):
-        sheet = drive.find_by_name("Prototipo Juego")
-        drive.write_sheet_tab(sheet["id"], "Ideas suelta 1", [["x", "y"]])
-        sheet_path = drive._path_map[sheet["id"]]
-        csv_path = sheet_path / "Ideas suelta 1.csv"
-        content = csv_path.read_text(encoding="utf-8")
-        assert "x" in content and "y" in content
 
 
 # ─── Range parser ─────────────────────────────────────────────────────────────

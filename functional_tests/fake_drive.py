@@ -1,23 +1,22 @@
 """
-Filesystem-backed fake Google Drive + MCP client stub.
+In-memory fake Google Drive + MCP client stub.
 
-Directory layout under functional_tests/drive/:
+The template is loaded once from functional_tests/drive/ on first
+FakeDrive() instantiation. Subsequent instances deep-copy the template —
+each test gets a fresh, isolated drive state with no shared mutable data,
+so tests are safe to run in parallel.
+
+Directory layout under functional_tests/drive/ (read-only, loaded once):
   - Regular directories  → Google Drive folders  (MIME_FOLDER)
   - *.txt files          → Google Docs            (MIME_DOC)
   - *.sheet directories  → Google Sheets          (MIME_SHEET)
       children *.csv     → individual tabs
   - .gitkeep / dotfiles  → ignored
-
-FakeDrive keeps an in-memory index (items, contents, sheets) that mirrors
-the filesystem.  Every mutation writes through to disk, so tests can assert
-directly on the real files.  snapshot()/restore() use shutil.copytree so
-the filesystem is fully reverted after each test.
 """
+import copy
 import csv as _csv
 import json
 import re
-import shutil
-import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -72,134 +71,111 @@ def _resolve_file_type(file_type: str) -> tuple[str | None, str | None]:
 DRIVE_ROOT = Path(__file__).parent / "drive"
 
 
-# ─── CSV helpers ──────────────────────────────────────────────────────────────
+# ─── CSV helper (template load only) ──────────────────────────────────────────
 
-def read_csv(path: Path) -> list[list[str]]:
+def _read_csv(path: Path) -> list[list[str]]:
     with open(path, newline="", encoding="utf-8") as f:
         return [row for row in _csv.reader(f) if row]  # skip blank lines
-
-
-def write_csv(path: Path, rows: list) -> None:
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = _csv.writer(f)
-        for row in rows:
-            writer.writerow([str(v) for v in row])
 
 
 # ─── FakeDrive ────────────────────────────────────────────────────────────────
 
 class FakeDrive:
     """
-    In-memory index that mirrors functional_tests/drive/ on disk.
-    All mutations write through to disk.
+    In-memory fake Drive. Template is loaded once from disk; every instance
+    gets a deep-copied, isolated snapshot of that template — no disk writes,
+    no shared state, safe to run in parallel.
     """
 
-    def __init__(self, root: Path = DRIVE_ROOT) -> None:
-        self.root = root.resolve()
+    _TEMPLATE: dict | None = None
+
+    def __init__(self) -> None:
+        if FakeDrive._TEMPLATE is None:
+            FakeDrive._build_template()
+        tmpl = FakeDrive._TEMPLATE
         # id → {id, name, mimeType, parent_id}
-        self.items: dict[str, dict] = {}
-        # doc id → text content  (kept in sync with .txt files)
-        self.contents: dict[str, str] = {}
-        # sheet id → {tab_name → [[row...]]}  (kept in sync with .csv files)
-        self.sheets: dict[str, dict[str, list]] = {}
-        # item_id → filesystem path
-        self._path_map: dict[str, Path] = {}
-        self._counter: int = 1000
+        self.items: dict[str, dict] = copy.deepcopy(tmpl["items"])
+        # doc id → text content
+        self.contents: dict[str, str] = copy.deepcopy(tmpl["contents"])
+        # sheet id → {tab_name → [[row...]]}
+        self.sheets: dict[str, dict[str, list]] = copy.deepcopy(tmpl["sheets"])
+        self._counter: int = tmpl["counter"]
         self._call_log: list[dict] = []
         self._step: int = 0
-        self._load()
 
-    # ── loading ──────────────────────────────────────────────────────────────
+    # ── template loader ──────────────────────────────────────────────────────
+
+    @classmethod
+    def _build_template(cls) -> None:
+        """Walk DRIVE_ROOT once and cache the resulting in-memory state."""
+        items: dict[str, dict] = {
+            "root": {"id": "root", "name": "root", "mimeType": MIME_FOLDER, "parent_id": None},
+        }
+        contents: dict[str, str] = {}
+        sheets: dict[str, dict[str, list]] = {}
+        counter = [1000]
+
+        def next_id(name: str) -> str:
+            counter[0] += 1
+            slug = re.sub(r"[^A-Za-z0-9]", "", name)[:12]
+            suffix = f"_{slug}" if slug else ""
+            return f"item_{counter[0]}{suffix}"
+
+        def walk(directory: Path, parent_id: str) -> None:
+            for child in sorted(directory.iterdir()):
+                if child.name.startswith("."):
+                    continue  # ignore .gitkeep and other dotfiles
+                if child.is_dir():
+                    if child.name.endswith(".sheet"):
+                        load_sheet(child, parent_id)
+                    else:
+                        load_folder(child, parent_id)
+                elif child.suffix == ".txt":
+                    load_doc(child, parent_id)
+
+        def load_folder(path: Path, parent_id: str) -> None:
+            item_id = next_id(path.name)
+            items[item_id] = {
+                "id": item_id, "name": path.name,
+                "mimeType": MIME_FOLDER, "parent_id": parent_id,
+            }
+            walk(path, item_id)
+
+        def load_doc(path: Path, parent_id: str) -> None:
+            item_id = next_id(path.stem)
+            items[item_id] = {
+                "id": item_id, "name": path.stem,
+                "mimeType": MIME_DOC, "parent_id": parent_id,
+            }
+            contents[item_id] = path.read_text(encoding="utf-8")
+
+        def load_sheet(path: Path, parent_id: str) -> None:
+            display_name = path.name[:-6]  # strip ".sheet"
+            item_id = next_id(display_name)
+            items[item_id] = {
+                "id": item_id, "name": display_name,
+                "mimeType": MIME_SHEET, "parent_id": parent_id,
+            }
+            sheets[item_id] = {
+                csv.stem: _read_csv(csv)
+                for csv in sorted(path.glob("*.csv"))
+            }
+
+        walk(DRIVE_ROOT, "root")
+        cls._TEMPLATE = {
+            "items": items,
+            "contents": contents,
+            "sheets": sheets,
+            "counter": counter[0],
+        }
+
+    # ── id allocator ─────────────────────────────────────────────────────────
 
     def _next_id(self, name: str = "") -> str:
         self._counter += 1
         slug = re.sub(r"[^A-Za-z0-9]", "", name)[:12]
         suffix = f"_{slug}" if slug else ""
         return f"item_{self._counter}{suffix}"
-
-    def _load(self) -> None:
-        self.items["root"] = {
-            "id": "root", "name": "root",
-            "mimeType": MIME_FOLDER, "parent_id": None,
-        }
-        self._walk(self.root, "root")
-
-    def _walk(self, directory: Path, parent_id: str) -> None:
-        for child in sorted(directory.iterdir()):
-            if child.name.startswith("."):
-                continue  # ignore .gitkeep and other dotfiles
-            if child.is_dir():
-                if child.name.endswith(".sheet"):
-                    self._load_sheet(child, parent_id)
-                else:
-                    self._load_folder(child, parent_id)
-            elif child.suffix == ".txt":
-                self._load_doc(child, parent_id)
-
-    def _load_folder(self, path: Path, parent_id: str) -> str:
-        item_id = self._next_id(path.name)
-        self.items[item_id] = {
-            "id": item_id, "name": path.name,
-            "mimeType": MIME_FOLDER, "parent_id": parent_id,
-        }
-        self._path_map[item_id] = path
-        self._walk(path, item_id)
-        return item_id
-
-    def _load_doc(self, path: Path, parent_id: str) -> str:
-        item_id = self._next_id(path.stem)
-        self.items[item_id] = {
-            "id": item_id, "name": path.stem,
-            "mimeType": MIME_DOC, "parent_id": parent_id,
-        }
-        self._path_map[item_id] = path
-        self.contents[item_id] = path.read_text(encoding="utf-8")
-        return item_id
-
-    def _load_sheet(self, path: Path, parent_id: str) -> str:
-        display_name = path.name[:-6]  # strip ".sheet"
-        item_id = self._next_id(display_name)
-        self.items[item_id] = {
-            "id": item_id, "name": display_name,
-            "mimeType": MIME_SHEET, "parent_id": parent_id,
-        }
-        self._path_map[item_id] = path
-        tabs = {
-            csv.stem: read_csv(csv)
-            for csv in sorted(path.glob("*.csv"))
-        }
-        self.sheets[item_id] = tabs
-        return item_id
-
-    # ── snapshot / restore ───────────────────────────────────────────────────
-
-    def snapshot(self) -> Path:
-        """Copy the entire drive directory to a temp location. Returns the copy path."""
-        tmp = Path(tempfile.mkdtemp(prefix="fake_drive_snap_"))
-        snap = tmp / "snap"
-        shutil.copytree(self.root, snap)
-        return snap
-
-    def restore(self, snap: Path) -> None:
-        """Revert the drive to the snapshot state and rebuild the in-memory index."""
-        # Remove current drive contents (keep the root dir itself)
-        for child in self.root.iterdir():
-            if child.is_dir():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-        # Copy snapshot back
-        for child in snap.iterdir():
-            dest = self.root / child.name
-            shutil.copytree(child, dest) if child.is_dir() else shutil.copy2(child, dest)
-        shutil.rmtree(snap.parent)  # clean up temp dir
-        # Rebuild in-memory state
-        self.items.clear()
-        self.contents.clear()
-        self.sheets.clear()
-        self._path_map.clear()
-        self._counter = 1000
-        self._load()
 
     # ── call log ─────────────────────────────────────────────────────────────
 
@@ -214,51 +190,33 @@ class FakeDrive:
         self._call_log.clear()
         self._step = 0
 
-    # ── mutation helpers (write-through) ─────────────────────────────────────
-
-    def _parent_path(self, parent_id: str) -> Path:
-        return self._path_map.get(parent_id, self.root)
+    # ── mutation helpers (in-memory only) ────────────────────────────────────
 
     def create_folder(self, name: str, parent_id: str) -> dict:
-        path = self._parent_path(parent_id) / name
-        path.mkdir(exist_ok=True)
         item_id = self._next_id(name)
         item = {"id": item_id, "name": name, "mimeType": MIME_FOLDER, "parent_id": parent_id}
         self.items[item_id] = item
-        self._path_map[item_id] = path
         return item
 
     def create_doc(self, name: str, parent_id: str, content: str = "") -> dict:
-        path = self._parent_path(parent_id) / f"{name}.txt"
-        path.write_text(content, encoding="utf-8")
         item_id = self._next_id(name)
         item = {"id": item_id, "name": name, "mimeType": MIME_DOC, "parent_id": parent_id}
         self.items[item_id] = item
-        self._path_map[item_id] = path
         self.contents[item_id] = content
         return item
 
     def create_sheet(self, name: str, parent_id: str) -> dict:
-        path = self._parent_path(parent_id) / f"{name}.sheet"
-        path.mkdir(exist_ok=True)
         item_id = self._next_id(name)
         item = {"id": item_id, "name": name, "mimeType": MIME_SHEET, "parent_id": parent_id}
         self.items[item_id] = item
-        self._path_map[item_id] = path
         self.sheets[item_id] = {}
         return item
 
     def write_doc(self, item_id: str, content: str) -> None:
         self.contents[item_id] = content
-        path = self._path_map.get(item_id)
-        if path:
-            path.write_text(content, encoding="utf-8")
 
     def write_sheet_tab(self, item_id: str, tab_name: str, rows: list) -> None:
         self.sheets.setdefault(item_id, {})[tab_name] = rows
-        sheet_path = self._path_map.get(item_id)
-        if sheet_path:
-            write_csv(sheet_path / f"{tab_name}.csv", rows)
 
     # ── query helpers ─────────────────────────────────────────────────────────
 
@@ -945,9 +903,6 @@ class FakeMCPClient:
         if not item:
             return f"[Tool error] Spreadsheet '{spreadsheet_id}' not found."
         self._drive.sheets.setdefault(spreadsheet_id, {})[sheet_name] = []
-        sheet_path = self._drive._path_map.get(spreadsheet_id)
-        if sheet_path:
-            (sheet_path / f"{sheet_name}.csv").write_text("", encoding="utf-8")
         return f"Successfully created sheet '{sheet_name}' in spreadsheet '{item['name']}' (ID: {spreadsheet_id})."
 
     async def _tool_read_spreadsheet_comments(self, spreadsheet_id: str, **_) -> str:
