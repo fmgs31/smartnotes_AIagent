@@ -8,7 +8,7 @@ from typing import Any
 from app.agent_memory import AgentMemory
 from app.planner import Planner
 from app.mcp_client import MCPClient
-from app.schemas import ErrorEvent, EventType, ExecutedToolStep, NextStepPlan, ProcedureSummary
+from app.schemas import ErrorEvent, EventType, ExecutedToolStep, NextStepPlan, FullTaskSummary
 from app.server_registry import ServerConfig, ServerRegistry
 from app.utils import stable_json
 
@@ -93,7 +93,7 @@ class Agent:
             yield request_ctxt
 
     async def _handle(self, request_ctxt: _RequestContext):
-        """Core logic: yields (NextStepPlan, ExecutedToolStep) per step, then the final ProcedureSummary."""
+        """Core logic: yields (NextStepPlan, ExecutedToolStep) per step, then the final FullTaskSummary."""
         planning_context: list[dict[str, Any]] = []
         seen_signatures: set[tuple[str, str]] = set()
         step_count = 0
@@ -116,13 +116,17 @@ class Agent:
             raise ValueError("Planner did not produce any executable step for this request")
 
         if done_plan:
-            result = ProcedureSummary(
-                text=done_plan.full_task_summary,
-                items=done_plan.items,
+            result = await self._planner.summarize(
+                text=request_ctxt.text,
+                done_plan=done_plan,
+                executed_steps=planning_context,
+                known_drive_items=request_ctxt.known_drive_items,
+                user_guidelines=request_ctxt.user_guidelines,
+                planner_model=request_ctxt.planner_model,
             )
         else:
             log.warning("Max steps exhausted without done=true; summary may be empty")
-            result = ProcedureSummary(text="", items=[])
+            result = FullTaskSummary(text="", items=[])
 
         yield result
 
@@ -140,7 +144,7 @@ class Agent:
         user_guidelines: str | None = None,
         planner_model: str | None = None,
     ) -> tuple:
-        """Run the pipeline and return (ProcedureSummary, list[ExecutedToolStep])."""
+        """Run the pipeline and return (FullTaskSummary, list[ExecutedToolStep])."""
         async with self._open_context(
             text=text,
             token=token,
@@ -155,7 +159,7 @@ class Agent:
                 if isinstance(obj, tuple):
                     _plan, executed = obj
                     steps.append(executed)
-                elif isinstance(obj, ProcedureSummary):
+                elif isinstance(obj, FullTaskSummary):
                     result = obj
             return result, steps
 
@@ -184,7 +188,7 @@ class Agent:
                         plan, _executed = obj
                         d = plan.model_dump(include={"next_tool", "arguments", "next_tool_explanation"})
                         d["type"] = EventType.STEP_PLANNED
-                    elif isinstance(obj, ProcedureSummary):
+                    elif isinstance(obj, FullTaskSummary):
                         d = obj.model_dump()
                         d["type"] = EventType.RESULT
                     else:

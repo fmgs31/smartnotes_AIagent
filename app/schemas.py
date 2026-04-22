@@ -57,7 +57,7 @@ class DriveItem(BaseModel):
     access_freq: int = 0
 
 
-class ProcedureSummary(BaseModel):
+class FullTaskSummary(BaseModel):
     text: str
     items: list[DriveItem] = Field(default_factory=list)
 

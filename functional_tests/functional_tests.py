@@ -14,7 +14,7 @@ from typing import Callable, Awaitable
 from app.agent import Agent
 from app.model_registry import ModelRegistry
 from app.planner import Planner
-from app.schemas import ExecutedToolStep, ProcedureSummary
+from app.schemas import ExecutedToolStep, FullTaskSummary
 from app.server_registry import ServerConfig, ServerRegistry
 from functional_tests.fake_drive import FakeDrive, FakeMCPClient, MIME_DOC, MIME_FOLDER
 from functional_tests.test_config import (
@@ -77,8 +77,8 @@ async def run_agent(
     drive: FakeDrive,
     text: str,
     guidelines: str = USER_GUIDELINES,
-) -> tuple[ProcedureSummary, list[ExecutedToolStep]]:
-    """Run the agent and return (ProcedureSummary, steps)."""
+) -> tuple[FullTaskSummary, list[ExecutedToolStep]]:
+    """Run the agent and return (FullTaskSummary, steps)."""
     known_items = build_known_items(drive)
     print(f"Request: {text}")
     result, steps = await agent.execute(
@@ -88,7 +88,7 @@ async def run_agent(
         known_drive_items=known_items,
         planner_model=agent.planner_model,
     )
-    assert result is not None, "Agent returned no ProcedureSummary"
+    assert result is not None, "Agent returned no FullTaskSummary"
     return result, steps
 
 

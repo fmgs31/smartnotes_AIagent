@@ -27,14 +27,14 @@ When done=false:
   "last_step_check": "<string>",
   "next_tool": "<one of allowed_tools>",
   "arguments": { ... },
-  "next_tool_call_explanation": "<one sentence: why this step>"
+  "next_tool_explanation": "<one sentence: why this step>"
 }
 
 When done=true:
 {
   "done": true,
   "last_step_check": "<string>",
-  "next_tool_call_explanation": "<one sentence: why done>",
+  "next_tool_explanation": "<one sentence: why done>",
   "full_task_summary": "<1-2 sentences in the user's language>",
   "items": [ { "name": "<display name>", "id": "<Drive ID>", "type": "<folder|document|spreadsheet|presentation|pdf|other>", "location": "<parent path>" } ]
 }
@@ -45,7 +45,7 @@ last_step_check:
 - "n/a" if no prior steps exist.
 - Otherwise the value MUST start with the exact name of the last tool called, then a colon, then "success:" or "failure:", then one fact from the result. Examples: "search_drive_files: success: found 1 item named 'Terapia'." / "modify_doc_text: failure: document not found."
 - Reference ONLY facts visible in the step's actual result string. If the result is a listing, do not claim "content obtained" — a listing yields names and IDs, nothing more.
-- Never mention the next action here. Forward-looking intent belongs in "next_tool_call_explanation".
+- Never mention the next action here. Forward-looking intent belongs in "next_tool_explanation".
 
 full_task_summary:
 - Use display names, never raw Drive IDs.
@@ -146,14 +146,14 @@ Known Drive items: [{"name": "Ideas Sueltas", "id": "id_001", "type": "folder", 
 User guidelines: trigger "nueva idea suelta" → create doc in Ideas Sueltas/<topic> subfolder.
 
 Step 1 — No executed steps. "Ideas Sueltas" is known (id_001). Topic subfolder "tiempo libre" is NOT known → must list first.
-{"done": false, "last_step_check": "n/a", "next_tool": "gw.list_drive_items", "arguments": {"folder_id": "id_001", "page_size": 100}, "next_tool_call_explanation": "List contents of Ideas Sueltas to check if subfolder 'tiempo libre' exists."}
+{"done": false, "last_step_check": "n/a", "next_tool": "gw.list_drive_items", "arguments": {"folder_id": "id_001", "page_size": 100}, "next_tool_explanation": "List contents of Ideas Sueltas to check if subfolder 'tiempo libre' exists."}
 
 Step 2 — Listing returned no "tiempo libre" folder → create it.
-{"done": false, "last_step_check": "success: listed 2 items in Ideas Sueltas; no folder named 'tiempo libre' found.", "next_tool": "gw.create_drive_folder", "arguments": {"folder_name": "tiempo libre", "parent_folder_id": "id_001"}, "next_tool_call_explanation": "Subfolder does not exist, creating it."}
+{"done": false, "last_step_check": "success: listed 2 items in Ideas Sueltas; no folder named 'tiempo libre' found.", "next_tool": "gw.create_drive_folder", "arguments": {"folder_name": "tiempo libre", "parent_folder_id": "id_001"}, "next_tool_explanation": "Subfolder does not exist, creating it."}
 
 Step 3 — Folder created (id_002). Dictated content not yet written → create the document.
-{"done": false, "last_step_check": "success: created folder 'tiempo libre' (id_002) in Ideas Sueltas.", "next_tool": "gw.create_drive_file", "arguments": {"file_name": "Tiempo libre", "content": "el tiempo libre es cuando haces lo que quieres sin ningún tipo de culpa", "folder_id": "id_002", "mime_type": "application/vnd.google-apps.document"}, "next_tool_call_explanation": "Creating document with the dictated content."}
+{"done": false, "last_step_check": "success: created folder 'tiempo libre' (id_002) in Ideas Sueltas.", "next_tool": "gw.create_drive_file", "arguments": {"file_name": "Tiempo libre", "content": "el tiempo libre es cuando haces lo que quieres sin ningún tipo de culpa", "folder_id": "id_002", "mime_type": "application/vnd.google-apps.document"}, "next_tool_explanation": "Creating document with the dictated content."}
 
 Step 4 — Document created (id_003). Content inventory: the dictated text is in step 3's arguments → done.
-{"done": true, "last_step_check": "success: created document 'Tiempo libre' (id_003) in folder 'tiempo libre'.", "next_tool_call_explanation": "All dictated content has been written.", "full_task_summary": "Se creó la carpeta 'tiempo libre' y el documento 'Tiempo libre' con el contenido dictado en Ideas Sueltas.", "items": [{"name": "tiempo libre", "id": "id_002", "type": "folder", "location": "/Ideas Sueltas/"}, {"name": "Tiempo libre", "id": "id_003", "type": "document", "location": "/Ideas Sueltas/tiempo libre/"}]}
+{"done": true, "last_step_check": "success: created document 'Tiempo libre' (id_003) in folder 'tiempo libre'.", "next_tool_explanation": "All dictated content has been written.", "full_task_summary": "Se creó la carpeta 'tiempo libre' y el documento 'Tiempo libre' con el contenido dictado en Ideas Sueltas.", "items": [{"name": "tiempo libre", "id": "id_002", "type": "folder", "location": "/Ideas Sueltas/"}, {"name": "Tiempo libre", "id": "id_003", "type": "document", "location": "/Ideas Sueltas/tiempo libre/"}]}
 </example>

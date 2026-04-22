@@ -75,11 +75,22 @@ _CLIENT_FACTORIES: dict[str, Callable[[str], Callable]] = {
 class ResolvedModel:
     """Everything needed to make one LLM call: name, prompt, and a vendor-agnostic complete callable."""
 
-    def __init__(self, *, full_name: str, prompt: str, vendor: str, complete_fn: Callable):
+    def __init__(
+        self,
+        *,
+        full_name: str,
+        prompt: str,
+        vendor: str,
+        complete_fn: Callable,
+        summarizer_prompt: str | None = None,
+    ):
         self.full_name = full_name
         self.prompt = prompt
         self.vendor = vendor
         self._complete_fn = complete_fn
+        # When set, the planner emits a lean next-step output (no summary fields)
+        # and a separate LLM call with this prompt produces full_task_summary + items.
+        self.summarizer_prompt = summarizer_prompt
 
     async def complete(self, *, input: list[dict], schema: dict) -> str:
         return await self._complete_fn(input=input, schema=schema)
@@ -104,6 +115,12 @@ class ModelRegistry:
                     f"Known vendors: {sorted(_CLIENT_FACTORIES)}"
                 )
 
+        def _load_summarizer_prompt(attrs: dict) -> str | None:
+            path = attrs.get("summarizer_prompt_file")
+            if not path:
+                return None
+            return (prompts_folder / path).read_text(encoding="utf-8").strip()
+
         self._default_model: str = prompt_map["default_model"]
         self._models: dict[str, ResolvedModel] = {
             name: ResolvedModel(
@@ -111,6 +128,7 @@ class ModelRegistry:
                 prompt=(prompts_folder / attrs["prompt_file"]).read_text(encoding="utf-8").strip(),
                 vendor=attrs["vendor"],
                 complete_fn=_CLIENT_FACTORIES[attrs["vendor"]](attrs["full_name"]),
+                summarizer_prompt=_load_summarizer_prompt(attrs),
             )
             for name, attrs in models.items()
         }

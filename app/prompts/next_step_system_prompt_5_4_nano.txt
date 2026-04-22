@@ -24,7 +24,7 @@ When done=false:
   "last_step_check": "<string>",
   "next_tool": "<one of allowed_tools>",
   "arguments": { ... },
-  "next_tool_call_explanation": "<why this step>"
+  "next_tool_explanation": "<why this step>"
 }
 ```
 
@@ -33,7 +33,7 @@ When done=true:
 {
   "done": true,
   "last_step_check": "<string>",
-  "next_tool_call_explanation": "<why done>",
+  "next_tool_explanation": "<why done>",
   "full_task_summary": "<1-2 sentences in the user's language>",
   "items": [ { "name": "<display name>", "id": "<Drive ID>", "type": "<folder|document|spreadsheet|presentation|pdf|other>", "location": "<parent path, e.g. / or /Work/>" } ]
 }
@@ -121,20 +121,20 @@ User guidelines say: trigger "nueva idea suelta" → create doc in Ideas Sueltas
 
 Step 1 — No executed steps yet. "Ideas Sueltas" is in known items (id_001). Topic subfolder "tiempo libre" is NOT in known items → must look it up first.
 ```
-{"done": false, "last_step_check": "n/a", "next_tool": "gw.list_drive_items", "arguments": {"folder_id": "id_001", "page_size": 100}, "next_tool_call_explanation": "List contents of Ideas Sueltas to check if subfolder 'tiempo libre' exists."}
+{"done": false, "last_step_check": "n/a", "next_tool": "gw.list_drive_items", "arguments": {"folder_id": "id_001", "page_size": 100}, "next_tool_explanation": "List contents of Ideas Sueltas to check if subfolder 'tiempo libre' exists."}
 ```
 
 Step 2 — Listing returned no folder named "tiempo libre" → create it.
 ```
-{"done": false, "last_step_check": "success: listed 2 items in Ideas Sueltas; no folder named 'tiempo libre' found.", "next_tool": "gw.create_drive_folder", "arguments": {"folder_name": "tiempo libre", "parent_folder_id": "id_001"}, "next_tool_call_explanation": "Subfolder does not exist, creating it."}
+{"done": false, "last_step_check": "success: listed 2 items in Ideas Sueltas; no folder named 'tiempo libre' found.", "next_tool": "gw.create_drive_folder", "arguments": {"folder_name": "tiempo libre", "parent_folder_id": "id_001"}, "next_tool_explanation": "Subfolder does not exist, creating it."}
 ```
 
 Step 3 — Folder created with id_002. Content to write: "el tiempo libre es cuando haces lo que quieres sin ningún tipo de culpa". Not yet written → create the document.
 ```
-{"done": false, "last_step_check": "success: created folder 'tiempo libre' (id_002) in Ideas Sueltas.", "next_tool": "gw.create_drive_file", "arguments": {"file_name": "Tiempo libre", "content": "el tiempo libre es cuando haces lo que quieres sin ningún tipo de culpa", "folder_id": "id_002", "mime_type": "application/vnd.google-apps.document"}, "next_tool_call_explanation": "Creating document with the dictated content in the new subfolder."}
+{"done": false, "last_step_check": "success: created folder 'tiempo libre' (id_002) in Ideas Sueltas.", "next_tool": "gw.create_drive_file", "arguments": {"file_name": "Tiempo libre", "content": "el tiempo libre es cuando haces lo que quieres sin ningún tipo de culpa", "folder_id": "id_002", "mime_type": "application/vnd.google-apps.document"}, "next_tool_explanation": "Creating document with the dictated content in the new subfolder."}
 ```
 
 Step 4 — Document created with id_003. Content inventory: the one piece of dictated text is already in step 3's arguments → all done.
 ```
-{"done": true, "last_step_check": "success: created document 'Tiempo libre' (id_003) in folder 'tiempo libre'.", "next_tool_call_explanation": "All dictated content has been written.", "full_task_summary": "Se creó la carpeta 'tiempo libre' y el documento 'Tiempo libre' con el contenido dictado en Ideas Sueltas.", "items": [{"name": "tiempo libre", "id": "id_002", "type": "folder", "location": "/Ideas Sueltas/"}, {"name": "Tiempo libre", "id": "id_003", "type": "document", "location": "/Ideas Sueltas/tiempo libre/"}]}
+{"done": true, "last_step_check": "success: created document 'Tiempo libre' (id_003) in folder 'tiempo libre'.", "next_tool_explanation": "All dictated content has been written.", "full_task_summary": "Se creó la carpeta 'tiempo libre' y el documento 'Tiempo libre' con el contenido dictado en Ideas Sueltas.", "items": [{"name": "tiempo libre", "id": "id_002", "type": "folder", "location": "/Ideas Sueltas/"}, {"name": "Tiempo libre", "id": "id_003", "type": "document", "location": "/Ideas Sueltas/tiempo libre/"}]}
 ```

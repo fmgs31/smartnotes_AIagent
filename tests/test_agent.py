@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agent import Agent, _RequestContext
 from app.server_registry import ServerConfig, ServerRegistry
-from app.schemas import EventType, NextStepPlan, ProcedureSummary
+from app.schemas import EventType, NextStepPlan, FullTaskSummary
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -17,10 +17,18 @@ def _make_registry(*server_ids: str):
     return registry, servers
 
 
+async def _echo_summary(*, done_plan, **_kw):
+    """Mirror Planner.summarize's no-summarizer-prompt branch."""
+    return FullTaskSummary(text=done_plan.full_task_summary, items=done_plan.items)
+
+
 def _make_agent(*server_ids: str, planner=None):
     registry, servers = _make_registry(*server_ids or ("test-server",))
     if planner is None:
         planner = AsyncMock()
+    # Default summarize behavior so tests that only mock plan_next_step keep working.
+    # Tests that need v4-style summarization can override planner.summarize themselves.
+    planner.summarize.side_effect = _echo_summary
     svc = Agent(registry=registry, planner=planner, max_plan_steps=5)
     return svc, servers
 
@@ -64,7 +72,7 @@ class TestHandleText:
         procedure, steps = await svc.execute(text="find docs", token="tok")
 
         assert steps[-1].tool_name == "test-server.search"
-        assert isinstance(procedure, ProcedureSummary)
+        assert isinstance(procedure, FullTaskSummary)
         assert procedure.text == "Found 3 documents."
         assert len(steps) == 1
 
@@ -90,7 +98,7 @@ class TestHandleText:
         procedure, steps = await svc.execute(text="search and create", token="tok")
 
         assert len(steps) == 2
-        assert isinstance(procedure, ProcedureSummary)
+        assert isinstance(procedure, FullTaskSummary)
         assert procedure.text == "Searched and created."
 
     @patch("app.agent.MCPClient")
@@ -185,6 +193,92 @@ class TestHandleText:
             "allowed_tools was empty — load_tools may not have been called"
         assert call_kwargs["tool_schemas"] == {"test-server.search": {"type": "object", "properties": {}}}, \
             "tool_schemas was empty — load_tools may not have been called"
+
+    @patch("app.agent.MCPClient")
+    async def test_summarize_called_with_done_plan_and_executed_steps(self, mock_mcp_cls):
+        """The agent must hand done_plan plus the full execution context to planner.summarize."""
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
+        svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
+        svc._tool_id_to_schema = {"test-server.search": {}}
+        done = NextStepPlan(done=True, full_task_summary="done")
+        mock_plan.plan_next_step.side_effect = [
+            NextStepPlan(done=False, next_tool="test-server.search", arguments={"q": "abc"}),
+            done,
+        ]
+        mock_mcp_cls.return_value = _mcp_mock(call_result="abc result")
+
+        await svc.execute(
+            text="find abc",
+            token="tok",
+            user_guidelines="be terse",
+            known_drive_items=[{"name": "X", "id": "id1", "type": "document", "location": "/"}],
+            planner_model="some-model",
+        )
+
+        mock_plan.summarize.assert_awaited_once()
+        kwargs = mock_plan.summarize.await_args.kwargs
+        assert kwargs["text"] == "find abc"
+        assert kwargs["done_plan"] is done
+        assert kwargs["user_guidelines"] == "be terse"
+        assert kwargs["planner_model"] == "some-model"
+        assert kwargs["known_drive_items"] == [
+            {"name": "X", "id": "id1", "type": "document", "location": "/"}
+        ]
+        # executed_steps reflects the one tool call before done=true
+        executed = kwargs["executed_steps"]
+        assert len(executed) == 1
+        assert executed[0]["next_tool"] == "test-server.search"
+        assert executed[0]["arguments"] == {"q": "abc"}
+        assert "abc result" in executed[0]["result_summary"]
+
+    @patch("app.agent.MCPClient")
+    async def test_split_summarizer_overrides_done_plan_summary(self, mock_mcp_cls):
+        """v4 path: when summarize() returns its own FullTaskSummary, the agent uses it
+        instead of the (empty) summary fields the lean-schema planner emits."""
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
+        svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
+        svc._tool_id_to_schema = {"test-server.search": {}}
+        # Lean-schema planner: done=true with empty summary fields (defaults).
+        mock_plan.plan_next_step.side_effect = [
+            NextStepPlan(done=False, next_tool="test-server.search", arguments={"q": "x"}),
+            NextStepPlan(done=True),
+        ]
+        # Summarizer call produces the real summary from a separate LLM call.
+        from app.schemas import DriveItem
+        summarizer_output = FullTaskSummary(
+            text="Found 1 result for 'x'.",
+            items=[DriveItem(name="result.doc", id="real-id-42", type="document", location="/")],
+        )
+        mock_plan.summarize.side_effect = None
+        mock_plan.summarize.return_value = summarizer_output
+        mock_mcp_cls.return_value = _mcp_mock(call_result="x result")
+
+        result, _steps = await svc.execute(text="search x", token="tok")
+
+        assert result is summarizer_output
+        assert result.text == "Found 1 result for 'x'."
+        assert result.items[0].id == "real-id-42"
+
+    @patch("app.agent.MCPClient")
+    async def test_summarize_not_called_when_max_steps_exhausted(self, mock_mcp_cls):
+        """No done_plan → no summarize call; agent falls back to an empty summary."""
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
+        svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
+        svc._tool_id_to_schema = {"test-server.search": {}}
+        mock_plan.plan_next_step.side_effect = [
+            NextStepPlan(done=False, next_tool="test-server.search", arguments={"q": str(i)})
+            for i in range(svc.max_plan_steps)
+        ]
+        mock_mcp_cls.return_value = _mcp_mock(call_result="result")
+
+        result, _steps = await svc.execute(text="loop", token="tok")
+
+        mock_plan.summarize.assert_not_awaited()
+        assert result.text == ""
+        assert result.items == []
 
     @patch("app.agent.MCPClient")
     async def test_max_steps_exhausted_returns_all_steps(self, mock_mcp_cls):

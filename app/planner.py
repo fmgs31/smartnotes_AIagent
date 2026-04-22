@@ -4,15 +4,30 @@ import time
 from datetime import date
 
 from app.model_registry import ModelRegistry
-from app.schemas import NextStepPlan
+from app.schemas import DriveItem, NextStepPlan, FullTaskSummary
 
 log = logging.getLogger("planner")
+
+
+_DRIVE_ITEM_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "name": {"type": "string"},
+        "id": {"type": "string"},
+        "type": {"type": "string"},
+        "location": {"type": "string"},
+    },
+    "required": ["name", "id", "type", "location"],
+}
 
 
 class Planner:
     """Wraps the OpenAI Responses API to produce single-step plans for the agent."""
 
-    _NEXT_STEP_PLAN_SCHEMA = {
+    # Planner emits the next step AND the final summary fields when done.
+    # Used for models without a separate summarizer prompt.
+    _STEP_AND_SUMMARY_SCHEMA = {
         "type": "object",
         "additionalProperties": False,
         "properties": {
@@ -23,22 +38,35 @@ class Planner:
             "arguments": {"type": "object", "additionalProperties": True},
             "done": {"type": "boolean"},
             "full_task_summary": {"type": "string"},
-            "items": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "name": {"type": "string"},
-                        "id": {"type": "string"},
-                        "type": {"type": "string"},
-                        "location": {"type": "string"},
-                    },
-                    "required": ["name", "id", "type", "location"],
-                },
-            },
+            "items": {"type": "array", "items": _DRIVE_ITEM_SCHEMA},
         },
         "required": ["done"],
+    }
+
+    # Planner only chooses the next step or signals done.
+    # Used when the model has a summarizer_prompt — a separate call produces the summary.
+    _STEP_ONLY_SCHEMA = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "last_step_check": {"type": "string"},
+            "pending_actions": {"type": "string"},
+            "next_tool_explanation": {"type": "string"},
+            "next_tool": {"type": "string"},
+            "arguments": {"type": "object", "additionalProperties": True},
+            "done": {"type": "boolean"},
+        },
+        "required": ["done"],
+    }
+
+    _SUMMARY_SCHEMA = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "full_task_summary": {"type": "string"},
+            "items": {"type": "array", "items": _DRIVE_ITEM_SCHEMA},
+        },
+        "required": ["full_task_summary", "items"],
     }
 
     def __init__(self, model_registry: ModelRegistry):
@@ -93,12 +121,13 @@ class Planner:
 
         t0 = time.perf_counter()
         model = self._model_registry.resolve(planner_model)
+        schema = self._STEP_ONLY_SCHEMA if model.summarizer_prompt else self._STEP_AND_SUMMARY_SCHEMA
         resp_text = await model.complete(
             input=[
                 {"role": "system", "content": model.prompt},
                 {"role": "user", "content": user},
             ],
-            schema=self._NEXT_STEP_PLAN_SCHEMA,
+            schema=schema,
         )
         log.info("plan_next_step took %.2fs", time.perf_counter() - t0)
         data = json.loads(resp_text)
@@ -110,6 +139,62 @@ class Planner:
             f"pending_actions={plan.pending_actions!r}"
         )
         return plan
+
+    async def summarize(
+        self,
+        *,
+        text: str,
+        done_plan: NextStepPlan,
+        executed_steps: list[dict] | None = None,
+        known_drive_items: list | None = None,
+        user_guidelines: str | None = None,
+        planner_model: str | None = None,
+    ) -> FullTaskSummary:
+        """Produce the final FullTaskSummary.
+
+        If the resolved model has a summarizer_prompt, call the LLM with the executed
+        steps to produce {full_task_summary, items}. Otherwise return the values the
+        planner already emitted in done_plan.
+        """
+        model = self._model_registry.resolve(planner_model)
+        if not model.summarizer_prompt:
+            return FullTaskSummary(
+                text=done_plan.full_task_summary,
+                items=done_plan.items,
+            )
+
+        items_str = json.dumps(known_drive_items, ensure_ascii=False) if known_drive_items else "[]"
+        steps_str = json.dumps(executed_steps or [], ensure_ascii=False)
+        guidelines_section = f"User guidelines:\n{user_guidelines}\n\n" if user_guidelines else ""
+        user = (
+            f"Current date: {date.today().isoformat()}\n\n"
+            f"User request:\n{text}\n\n"
+            f"Known Drive items:\n{items_str}\n\n"
+            f"{guidelines_section}"
+            f"Executed steps:\n{steps_str}\n"
+        )
+
+        log.info(
+            "Calling LLM now: Summarizing task: executed_steps=%d",
+            len(executed_steps or []),
+        )
+        t0 = time.perf_counter()
+        resp_text = await model.complete(
+            input=[
+                {"role": "system", "content": model.summarizer_prompt},
+                {"role": "user", "content": user},
+            ],
+            schema=self._SUMMARY_SCHEMA,
+        )
+        log.info("summarize took %.2fs", time.perf_counter() - t0)
+        data = json.loads(resp_text)
+        items = [DriveItem(**raw) for raw in data.get("items", [])]
+        summary = FullTaskSummary(text=data.get("full_task_summary", ""), items=items)
+        log.info(
+            "Summarizer output: text_len=%d items=%d",
+            len(summary.text), len(summary.items),
+        )
+        return summary
 
     @staticmethod
     def _summarize_executed_steps(executed_steps: list[dict]) -> str:
