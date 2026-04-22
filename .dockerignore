@@ -4,7 +4,8 @@ __pycache__/
 .gitignore
 .vscode/
 .env
-servers/
+servers/google_workspace_mcp/
+servers/run_google_workspace_mpc_server.bat
 data/
 gcp_token.json
 client_secret.json
