@@ -25,8 +25,11 @@ def _mock_fastmcp_client(list_tools_result=None, call_tool_result="ok"):
 
 
 class TestBuildTransport:
+    """MCPClient._build_transport: wires StreamableHttpTransport with/without auth headers."""
+
     @patch("app.mcp_client.StreamableHttpTransport")
     def test_with_token_passes_auth_header(self, mock_transport):
+        # A token must be passed as Bearer in the Authorization header.
         MCPClient("http://test/mcp/")._build_transport("ya29.abc")
         mock_transport.assert_called_once_with(
             url="http://test/mcp",
@@ -35,17 +38,23 @@ class TestBuildTransport:
 
     @patch("app.mcp_client.StreamableHttpTransport")
     def test_without_token_passes_no_headers(self, mock_transport):
+        # No token → headers must be None, not {}, not an empty dict.
         MCPClient("http://test/mcp/")._build_transport(None)
         mock_transport.assert_called_once_with(url="http://test/mcp", headers=None)
 
     def test_trailing_slash_stripped_from_url(self):
-        assert MCPClient("http://test/mcp/").server_url == "http://test/mcp"
+        # fastmcp 0.x chokes on trailing slashes — MCPClient normalises them away.
+        url = MCPClient("http://test/mcp/").server_url
+        assert url == "http://test/mcp", f"Expected trailing '/' to be stripped, got {url!r}"
 
     def test_url_without_trailing_slash_unchanged(self):
-        assert MCPClient("http://test/mcp").server_url == "http://test/mcp"
+        url = MCPClient("http://test/mcp").server_url
+        assert url == "http://test/mcp", f"URL without trailing slash should be unchanged, got {url!r}"
 
 
 class TestOpenSession:
+    """MCPClient._open_session: session lifecycle + token-binding + retry on connection errors."""
+
     @patch("app.mcp_client.Client")
     async def test_success_sets_client_and_token(self, mock_cls):
         mock_cls.return_value = _mock_fastmcp_client()
@@ -53,12 +62,15 @@ class TestOpenSession:
 
         await client._open_session("tok")
 
-        assert client._client is not None
-        assert client._session_token == "tok"
-        assert client._exit_stack is not None
+        assert client._client is not None, "Expected _client to be set after successful open"
+        assert client._session_token == "tok", (
+            f"Expected _session_token='tok', got {client._session_token!r}"
+        )
+        assert client._exit_stack is not None, "Expected _exit_stack to be set after successful open"
 
     @patch("app.mcp_client.Client")
     async def test_same_token_is_idempotent(self, mock_cls):
+        # Opening an already-open session with the same token is a no-op.
         instance = _mock_fastmcp_client()
         mock_cls.return_value = instance
         client = MCPClient("http://test/mcp/")
@@ -66,10 +78,13 @@ class TestOpenSession:
         await client._open_session("tok")
         await client._open_session("tok")  # second call should be no-op
 
-        assert instance.__aenter__.call_count == 1
+        assert instance.__aenter__.call_count == 1, (
+            f"Expected __aenter__ called once (idempotent), got {instance.__aenter__.call_count}"
+        )
 
     @patch("app.mcp_client.Client")
     async def test_different_token_when_open_raises(self, mock_cls):
+        # Token-binding guard: trying to swap tokens mid-session must fail loudly.
         mock_cls.return_value = _mock_fastmcp_client()
         client = MCPClient("http://test/mcp/")
         await client._open_session("token-a")
@@ -79,6 +94,7 @@ class TestOpenSession:
 
     @patch("app.mcp_client.Client")
     async def test_retries_on_connection_error(self, mock_cls):
+        # First __aenter__ fails with ConnectionError, second succeeds → retry works.
         instance = _mock_fastmcp_client()
         instance.__aenter__ = AsyncMock(
             side_effect=[ConnectionError("cold start"), instance]
@@ -88,11 +104,14 @@ class TestOpenSession:
 
         await client._open_session("tok")
 
-        assert instance.__aenter__.call_count == 2
-        assert client._client is not None
+        assert instance.__aenter__.call_count == 2, (
+            f"Expected 2 __aenter__ calls (1 fail + 1 success), got {instance.__aenter__.call_count}"
+        )
+        assert client._client is not None, "Expected _client to be set after successful retry"
 
     @patch("app.mcp_client.Client")
     async def test_raises_retry_error_when_all_attempts_fail(self, mock_cls):
+        # All attempts fail → tenacity wraps the final error as RetryError.
         instance = _mock_fastmcp_client()
         instance.__aenter__ = AsyncMock(side_effect=ConnectionError("always down"))
         mock_cls.return_value = instance
@@ -102,10 +121,14 @@ class TestOpenSession:
             await client._open_session("tok")
 
         # mcp_max_retries=2 → 3 total attempts
-        assert instance.__aenter__.call_count == 3
+        assert instance.__aenter__.call_count == 3, (
+            f"Expected 3 __aenter__ attempts (mcp_max_retries=2), got {instance.__aenter__.call_count}"
+        )
 
 
 class TestCloseSession:
+    """MCPClient._close_session: releases all session state."""
+
     @patch("app.mcp_client.Client")
     async def test_close_clears_all_state(self, mock_cls):
         mock_cls.return_value = _mock_fastmcp_client()
@@ -114,28 +137,38 @@ class TestCloseSession:
 
         await client._close_session()
 
-        assert client._client is None
-        assert client._session_token is None
-        assert client._exit_stack is None
+        assert client._client is None, f"Expected _client=None after close, got {client._client!r}"
+        assert client._session_token is None, (
+            f"Expected _session_token=None after close, got {client._session_token!r}"
+        )
+        assert client._exit_stack is None, (
+            f"Expected _exit_stack=None after close, got {client._exit_stack!r}"
+        )
 
     async def test_close_when_not_open_is_noop(self):
+        # Calling close on a never-opened client must not raise.
         client = MCPClient("http://test/mcp/")
         await client._close_session()  # should not raise
 
 
 class TestSessionContextManager:
+    """MCPClient.session: async context manager that opens on enter and always closes on exit."""
+
     @patch("app.mcp_client.Client")
     async def test_opens_and_closes_around_block(self, mock_cls):
         mock_cls.return_value = _mock_fastmcp_client()
         client = MCPClient("http://test/mcp/")
 
         async with client.session(token="tok"):
-            assert client._client is not None
+            assert client._client is not None, "Expected _client to be set inside session block"
 
-        assert client._client is None  # cleaned up
+        assert client._client is None, (
+            f"Expected _client=None after session block exits cleanly, got {client._client!r}"
+        )
 
     @patch("app.mcp_client.Client")
     async def test_closes_even_when_body_raises(self, mock_cls):
+        # Exception inside the block must still close the session — no leaked state.
         mock_cls.return_value = _mock_fastmcp_client()
         client = MCPClient("http://test/mcp/")
 
@@ -143,10 +176,14 @@ class TestSessionContextManager:
             async with client.session(token="tok"):
                 raise RuntimeError("boom")
 
-        assert client._client is None  # still cleaned up
+        assert client._client is None, (
+            f"Expected _client=None after session block raised, got {client._client!r}"
+        )
 
 
 class TestRequireClient:
+    """MCPClient._require_client: enforces 'must be in an open session with matching token'."""
+
     async def test_raises_when_no_session_open(self):
         client = MCPClient("http://test/mcp/")
         with pytest.raises(RuntimeError, match="No MCP session"):
@@ -154,6 +191,7 @@ class TestRequireClient:
 
     @patch("app.mcp_client.Client")
     async def test_raises_on_token_mismatch(self, mock_cls):
+        # Session bound to token-a; asking for token-b must raise.
         mock_cls.return_value = _mock_fastmcp_client()
         client = MCPClient("http://test/mcp/")
         await client._open_session("token-a")
@@ -168,10 +206,15 @@ class TestRequireClient:
         await client._open_session("tok")
 
         result = client._require_client("tok")
-        assert result is client._client
+        assert result is client._client, (
+            f"Expected _require_client to return the same object as self._client. "
+            f"Got {result!r} vs {client._client!r}"
+        )
 
 
 class TestListTools:
+    """MCPClient.list_tools: delegates to the active fastmcp session with token validation."""
+
     @patch("app.mcp_client.Client")
     async def test_returns_tools_from_active_session(self, mock_cls):
         fake_tools = [MagicMock()]
@@ -182,10 +225,13 @@ class TestListTools:
         async with client.session(token="tok"):
             result = await client.list_tools(token="tok")
 
-        assert result is fake_tools
+        assert result is fake_tools, (
+            f"Expected the exact tools object from list_tools(). Got {result!r} vs {fake_tools!r}"
+        )
 
     @patch("app.mcp_client.Client")
     async def test_token_mismatch_raises(self, mock_cls):
+        # Session open with token-a; list_tools(token-b) must raise — never leak tools across tokens.
         mock_cls.return_value = _mock_fastmcp_client()
         client = MCPClient("http://test/mcp/")
         await client._open_session("token-a")
@@ -200,6 +246,8 @@ class TestListTools:
 
 
 class TestCallTool:
+    """MCPClient.call_tool: invokes a tool within the active session, retrying on transient errors."""
+
     @patch("app.mcp_client.Client")
     async def test_returns_result_from_active_session(self, mock_cls):
         instance = _mock_fastmcp_client(call_tool_result="search results")
@@ -211,7 +259,9 @@ class TestCallTool:
                 token="tok", tool_name="search", arguments={"q": "hello"}
             )
 
-        assert result == "search results"
+        assert result == "search results", (
+            f"Expected tool result 'search results', got {result!r}"
+        )
 
     async def test_raises_without_session(self):
         client = MCPClient("http://test/mcp/")
@@ -220,6 +270,7 @@ class TestCallTool:
 
     @patch("app.mcp_client.Client")
     async def test_passes_tool_name_and_arguments(self, mock_cls):
+        # The raw tool name + arguments dict must be forwarded to fastmcp unchanged.
         instance = _mock_fastmcp_client()
         mock_cls.return_value = instance
         client = MCPClient("http://test/mcp/")
@@ -231,6 +282,7 @@ class TestCallTool:
 
     @patch("app.mcp_client.Client")
     async def test_retries_on_transient_error_and_succeeds(self, mock_cls):
+        # First call raises ConnectionError, second succeeds → retry logic recovers.
         instance = _mock_fastmcp_client(call_tool_result="ok")
         instance.call_tool = AsyncMock(side_effect=[ConnectionError("blip"), "ok"])
         mock_cls.return_value = instance
@@ -239,8 +291,10 @@ class TestCallTool:
         async with client.session(token="tok"):
             result = await client.call_tool(token="tok", tool_name="search", arguments={})
 
-        assert result == "ok"
-        assert instance.call_tool.call_count == 2
+        assert result == "ok", f"Expected 'ok' after retry, got {result!r}"
+        assert instance.call_tool.call_count == 2, (
+            f"Expected 2 call_tool invocations (1 fail + 1 success), got {instance.call_tool.call_count}"
+        )
 
     @patch("app.mcp_client.Client")
     async def test_raises_retry_error_when_all_attempts_fail(self, mock_cls):
@@ -254,7 +308,9 @@ class TestCallTool:
                 await client.call_tool(token="tok", tool_name="search", arguments={})
 
         # mcp_max_retries=2 → 3 total attempts
-        assert instance.call_tool.call_count == 3
+        assert instance.call_tool.call_count == 3, (
+            f"Expected 3 call_tool attempts (mcp_max_retries=2), got {instance.call_tool.call_count}"
+        )
 
     @patch("app.mcp_client.Client")
     async def test_tool_error_result_returned_without_retry(self, mock_cls):
@@ -269,5 +325,10 @@ class TestCallTool:
         async with client.session(token="tok"):
             result = await client.call_tool(token="tok", tool_name="insert_doc_elements", arguments={})
 
-        assert result is tool_error_result
-        assert instance.call_tool.call_count == 1
+        assert result is tool_error_result, (
+            f"Expected the isError=True result passed through unchanged. Got {result!r}"
+        )
+        assert instance.call_tool.call_count == 1, (
+            f"Expected no retry for isError=True result (it's a 200 OK response), "
+            f"got {instance.call_tool.call_count} attempts"
+        )
