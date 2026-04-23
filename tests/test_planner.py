@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import ValidationError
 
 from app.model_registry import ModelRegistry
 from app.planner import Planner
@@ -74,6 +75,21 @@ class TestPlanNextStepModelResolution:
             "Expected default model 'gpt-5-nano-2025-08-07' complete_fn to be invoked when "
             "planner_model is omitted, but it was never called."
         )
+
+    def test_invalid_llm_output_raises_validation_error(self, build_registry, monkeypatch):
+        # When the LLM returns JSON that doesn't satisfy NextStepPlan (e.g. missing the
+        # required `done` field), the planner must re-raise — not swallow and fall through
+        # into `plan.done`, which would surface as an UnboundLocalError and hide the root cause.
+        registry, complete_mocks = build_registry(
+            default_model="gpt-5-nano",
+            models={
+                "gpt-5-nano": {"full_name": "gpt-5-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_nano.txt"},
+            },
+        )
+        complete_mocks["gpt-5-nano-2025-08-07"].return_value = '{"next_tool": "list_drive_items"}'
+        planner = Planner(model_registry=registry)
+        with pytest.raises(ValidationError):
+            asyncio.run(planner.plan_next_step(text="hi", allowed_tools=None))
 
     def test_system_prompt_from_resolved_model_is_sent(self, build_registry):
         # Each model has its own prompt file; the system message sent to the LLM must reflect

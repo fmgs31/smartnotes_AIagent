@@ -5,7 +5,7 @@ from datetime import date
 
 from app.model_registry import ModelRegistry
 from app.schemas import DriveItem, NextStepPlan, FullTaskSummary
-
+from pydantic import ValidationError
 log = logging.getLogger("planner")
 
 
@@ -94,7 +94,9 @@ class Planner:
         last_step = executed_steps[-1] if executed_steps else None
         last_step_section = (
             f"Most recent step (step {last_step['step']}):\n"
-            f"tool={last_step['next_tool']}  result={last_step['result_summary']!r}\n\n"
+            f"tool={last_step['next_tool']}  "
+            f"arguments={json.dumps(last_step['arguments'], ensure_ascii=False)}  "
+            f"result={last_step['result_summary']!r}\n\n"
         ) if last_step else ""
 
         items_str = json.dumps(known_drive_items, ensure_ascii=False) if known_drive_items else None
@@ -131,8 +133,12 @@ class Planner:
         )
         log.info("plan_next_step took %.2fs", time.perf_counter() - t0)
         data = json.loads(resp_text)
-        plan = NextStepPlan(**data)
-        log.info(f"Data: {data}")
+        log.info(f"LLM output: {data}")
+        try:
+            plan = NextStepPlan(**data)
+        except ValidationError:
+            log.error(f"LLM output failed NextStepPlan validation: {data}")  # Log for error level
+            raise
         log.info(
             f"Planner output: done={plan.done} tool_name={plan.next_tool} "
             f"has_arguments={bool(plan.arguments)} last_step_check={plan.last_step_check!r} "
