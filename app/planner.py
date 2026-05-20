@@ -131,7 +131,6 @@ class Planner:
             ],
             schema=schema,
         )
-        log.info("plan_next_step took %.2fs", time.perf_counter() - t0)
         data = json.loads(resp_text)
         log.info(f"LLM output: {data}")
         try:
@@ -202,9 +201,3 @@ class Planner:
         )
         return summary
 
-    @staticmethod
-    def _summarize_executed_steps(executed_steps: list[dict]) -> str:
-        """Serialize executed steps to JSON for inclusion in the planner prompt."""
-        if not executed_steps:
-            return "None"
-        return json.dumps(executed_steps, ensure_ascii=False)

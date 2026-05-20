@@ -29,6 +29,7 @@ allowed_users.json
 
 # ---- Logs --------------------------------------------------------------
 mcp_server_debug.log
+failed_logs/*
 
 # ---- Local development files -------------------------------------------
 /.credentials

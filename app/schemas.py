@@ -54,7 +54,7 @@ class DriveItem(BaseModel):
     id: str
     type: str
     location: str = "/"
-    access_freq: int = 0
+    access_freq: int = Field(default=0, exclude=True)
 
 
 class FullTaskSummary(BaseModel):

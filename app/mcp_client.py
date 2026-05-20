@@ -26,6 +26,7 @@ class MCPClient:
                 initial=settings.mcp_retry_initial_wait_s,
                 max=settings.mcp_retry_max_wait_s,
             ),
+            reraise=True,
         )
 
     def _build_transport(self, token: str | None):

@@ -39,6 +39,7 @@ from functional_tests.functional_tests import ALL_TESTS, TestAgent, make_planner
 
 DEFAULT_MODEL = "gpt-5-nano-2025-08-07"
 # DEFAULT_MODEL = "gpt-5.4-nano-2026-03-17"
+DEFAULT_MODEL = "gpt-5.4-nano"
 
 
 def _configure_logging(verbose: bool) -> None:

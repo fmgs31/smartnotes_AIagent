@@ -431,6 +431,76 @@ async def test_safety_no_full_replace(agent: TestAgent, drive: FakeDrive) -> Non
     print(f"    content after replace attempt: {repr(content[:200])}")
 
 
+async def test_find_folder_among_many_files(agent: TestAgent, drive: FakeDrive) -> None:
+    """
+    Production regression: planner looked up a folder without passing
+    file_type='folder'. The response was capped at 100 items and the target
+    folder — sharing its name with many sibling files — fell past the page
+    boundary, so the agent reported "not found" or created a duplicate.
+
+    Setup: 105 documents named 'Diario' plus one folder also named 'Diario'
+    inside an existing known parent. Without a mime filter the folder cannot
+    be reached; with file_type='folder' it is the only result.
+    """
+    test_root = drive.find_by_name("Test_SmartNotes", MIME_FOLDER)
+    assert test_root, "Test_SmartNotes folder missing from template"
+
+    for i in range(105):
+        drive.create_doc("Diario", test_root["id"], content=f"ruido {i}")
+    target_folder = drive.create_folder("Diario", test_root["id"])
+
+    ids_before = set(drive.items.keys())
+
+    extra_trigger = (
+        "    - 'nota privada': create a document inside the subfolder 'Diario' "
+        "of the folder 'Test_SmartNotes' with the dictated text.\n"
+    )
+    guidelines = USER_GUIDELINES + extra_trigger
+
+    known_items = [
+        {"name": "Test_SmartNotes", "id": test_root["id"], "type": "folder", "location": "/"},
+    ]
+    text = "nota privada: hoy descubrí que el silencio también es respuesta"
+    print(f"Request: {text}")
+    result, steps = await agent.execute(
+        text=text,
+        token="fake-token",
+        user_guidelines=guidelines,
+        known_drive_items=known_items,
+        planner_model=agent.planner_model,
+    )
+    assert result is not None, "Agent returned no FullTaskSummary"
+
+    new_docs = _new_docs(drive, ids_before)
+    assert new_docs, "No new document was created."
+    assert len(new_docs) == 1, (
+        f"Expected exactly one new doc, got {len(new_docs)}: {[d['name'] for d in new_docs]}"
+    )
+    new_doc = new_docs[0]
+
+    new_folders = _new_folders(drive, ids_before)
+    assert not new_folders, (
+        f"Agent created a duplicate folder instead of finding 'Diario': "
+        f"{[f['name'] for f in new_folders]}"
+    )
+
+    assert new_doc["parent_id"] == target_folder["id"], (
+        f"Doc not placed inside the target 'Diario' folder.\n"
+        f"parent_id={new_doc['parent_id']} (expected {target_folder['id']})\n"
+        f"parent name={drive.items.get(new_doc['parent_id'], {}).get('name')}"
+    )
+
+    item_ids = {i.id for i in result.items}
+    assert new_doc["id"] in item_ids, (
+        f"New doc not in summary items. items={[i.name for i in result.items]}"
+    )
+
+    loops = _loop_warnings(steps)
+    if loops:
+        print(f"    WARNING loop retries: {loops}")
+    print(f"    created '{new_doc['name']}' inside '{target_folder['name']}'")
+
+
 async def test_read_terapia_first_line(agent: TestAgent, drive: FakeDrive) -> None:
     """
     Read-only question about the Terapia document.
@@ -516,5 +586,10 @@ ALL_TESTS: list[TestCase] = [
         "read_terapia_first_line",
         test_read_terapia_first_line,
         "Read-only query → agent returns doc first line without modifying anything",
+    ),
+    TestCase(
+        "find_folder_among_many_files",
+        test_find_folder_among_many_files,
+        "Folder lookup must use file_type='folder' when parent has 100+ same-named files",
     ),
 ]

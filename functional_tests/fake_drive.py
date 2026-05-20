@@ -580,10 +580,10 @@ class FakeMCPClient:
             return f"No documents found in folder '{folder_id}'."
         return "\n".join([f"Found {len(results)} docs in '{folder_id}':"] + [_fmt(i) for i in results])
 
-    async def _tool_create_doc(self, title: str, content: str = "", **_) -> str:
-        item = self._drive.create_doc(title, "root", content)
+    async def _tool_create_doc(self, title: str, content: str = "", folder_id: str = "root", **_) -> str:
+        item = self._drive.create_doc(title, folder_id, content)
         return (
-            f"Created Google Doc '{title}' (ID: {item['id']}). "
+            f"Created Google Doc '{title}' (ID: {item['id']}) in folder '{folder_id}'. "
             f"Link: https://docs.example/d/{item['id']}/edit"
         )
 

@@ -1,6 +1,5 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from tenacity import RetryError
 
 from app.mcp_client import MCPClient
 
@@ -110,14 +109,15 @@ class TestOpenSession:
         assert client._client is not None, "Expected _client to be set after successful retry"
 
     @patch("app.mcp_client.Client")
-    async def test_raises_retry_error_when_all_attempts_fail(self, mock_cls):
-        # All attempts fail → tenacity wraps the final error as RetryError.
+    async def test_raises_underlying_error_when_all_attempts_fail(self, mock_cls):
+        # All attempts fail → tenacity is configured with reraise=True so the
+        # original exception surfaces unchanged (no RetryError wrapper).
         instance = _mock_fastmcp_client()
         instance.__aenter__ = AsyncMock(side_effect=ConnectionError("always down"))
         mock_cls.return_value = instance
         client = MCPClient("http://test/mcp/")
 
-        with pytest.raises(RetryError):
+        with pytest.raises(ConnectionError, match="always down"):
             await client._open_session("tok")
 
         # mcp_max_retries=2 → 3 total attempts
@@ -297,14 +297,14 @@ class TestCallTool:
         )
 
     @patch("app.mcp_client.Client")
-    async def test_raises_retry_error_when_all_attempts_fail(self, mock_cls):
+    async def test_raises_underlying_error_when_all_attempts_fail(self, mock_cls):
         instance = _mock_fastmcp_client()
         instance.call_tool = AsyncMock(side_effect=ConnectionError("always down"))
         mock_cls.return_value = instance
         client = MCPClient("http://test/mcp/")
 
         async with client.session(token="tok"):
-            with pytest.raises(RetryError):
+            with pytest.raises(ConnectionError, match="always down"):
                 await client.call_tool(token="tok", tool_name="search", arguments={})
 
         # mcp_max_retries=2 → 3 total attempts

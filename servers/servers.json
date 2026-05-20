@@ -6,7 +6,7 @@
             "url_env_var_name": "GOOGLE_WORKSPACE_URL",
             "blocked_tools": [
                 "import_to_google_doc",
-                "create_doc",
+                "create_drive_file",
                 "find_and_replace_doc",
                 "update_drive_file",
                 "manage_drive_access",
