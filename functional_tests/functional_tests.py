@@ -501,6 +501,94 @@ async def test_find_folder_among_many_files(agent: TestAgent, drive: FakeDrive) 
     print(f"    created '{new_doc['name']}' inside '{target_folder['name']}'")
 
 
+async def test_nueva_idea_suelta_partial_name_collision(agent: TestAgent, drive: FakeDrive) -> None:
+    """
+    Production regression: Known Drive items contained Cuentos and its
+    subfolder 'Ideas' (location='Cuentos') but NOT 'Ideas Sueltas'. The
+    planner picked the 'Ideas' id (partial name match) and created the doc
+    under Cuentos/Ideas instead of resolving the real 'Ideas Sueltas' at root.
+
+    Setup: known_items omits Ideas Sueltas and includes Cuentos + Cuentos/Ideas.
+    Trigger: 'Nueva idea suelta.' (rule 2 in user guidelines). Topic in the
+    title is 'juego de mesa' but the dictation does NOT say
+    'idea para el juego de mesa', so the spreadsheet rule does NOT apply.
+
+    Expected: doc lands under Ideas Sueltas (directly or via a topic
+    subfolder). Doc must NOT land anywhere under Cuentos.
+    """
+    cuentos = drive.find_by_name("Cuentos", MIME_FOLDER)
+    cuentos_ideas = drive.find_by_name("Ideas", MIME_FOLDER)
+    ideas_sueltas = drive.find_by_name("Ideas Sueltas", MIME_FOLDER)
+    assert cuentos and cuentos_ideas and ideas_sueltas, "fake drive template missing required folders"
+    assert cuentos_ideas["parent_id"] == cuentos["id"], "Ideas folder is not Cuentos child as expected"
+
+    known_items = [
+        {"name": "Cuentos",     "id": cuentos["id"],        "type": "folder", "location": "/"},
+        {"name": "Ideas",       "id": cuentos_ideas["id"],  "type": "folder", "location": "Cuentos"},
+    ]
+
+    ids_before = set(drive.items.keys())
+    text = (
+        "Nueva idea suelta. El título es ¿Qué hace que sea un buen juego de "
+        "mesa interconectado? El contenido dice. Tienen que haber partes que "
+        "interactúen más allá de lo que hay de jugador y partes que el jugador "
+        "pueda interactuar cambiando el funcionamiento normal de las cosas que "
+        "hacen. Partes pueden ser con cosas del entorno y partes con otros "
+        "enemigos o personajes que estén ahí."
+    )
+    print(f"Request: {text}")
+    result, steps = await agent.execute(
+        text=text,
+        token="fake-token",
+        user_guidelines=USER_GUIDELINES,
+        known_drive_items=known_items,
+        planner_model=agent.planner_model,
+    )
+    assert result is not None, "Agent returned no FullTaskSummary"
+
+    new_docs = _new_docs(drive, ids_before)
+    assert new_docs, "No new document was created."
+    assert len(new_docs) == 1, (
+        f"Expected exactly one new doc, got {len(new_docs)}: {[d['name'] for d in new_docs]}"
+    )
+    new_doc = new_docs[0]
+
+    def _ancestors(item_id: str) -> list[str]:
+        ids = []
+        cur = drive.items.get(item_id, {})
+        while cur and cur.get("parent_id"):
+            pid = cur["parent_id"]
+            ids.append(pid)
+            cur = drive.items.get(pid, {})
+        return ids
+
+    ancestor_ids = _ancestors(new_doc["id"])
+    assert cuentos["id"] not in ancestor_ids, (
+        f"Doc placed under Cuentos (production bug).\n"
+        f"parent_chain={[drive.items.get(a, {}).get('name') for a in ancestor_ids]}"
+    )
+    assert ideas_sueltas["id"] in ancestor_ids, (
+        f"Doc not under Ideas Sueltas.\n"
+        f"parent_chain={[drive.items.get(a, {}).get('name') for a in ancestor_ids]}"
+    )
+
+    content = drive.contents.get(new_doc["id"], "")
+    assert "interactúen" in content.lower() or "jugador" in content.lower() or "entorno" in content.lower(), (
+        f"Idea content not found.\ncontent={repr(content)}"
+    )
+
+    item_ids = {i.id for i in result.items}
+    assert new_doc["id"] in item_ids, (
+        f"New doc not in summary items. items={[i.name for i in result.items]}"
+    )
+
+    loops = _loop_warnings(steps)
+    if loops:
+        print(f"    WARNING loop retries: {loops}")
+    parent_name = drive.items.get(new_doc["parent_id"], {}).get("name", "?")
+    print(f"    created '{new_doc['name']}' under '{parent_name}'")
+
+
 async def test_read_terapia_first_line(agent: TestAgent, drive: FakeDrive) -> None:
     """
     Read-only question about the Terapia document.
@@ -586,6 +674,11 @@ ALL_TESTS: list[TestCase] = [
         "read_terapia_first_line",
         test_read_terapia_first_line,
         "Read-only query → agent returns doc first line without modifying anything",
+    ),
+    TestCase(
+        "nueva_idea_suelta_partial_name_collision",
+        test_nueva_idea_suelta_partial_name_collision,
+        "Known items has Cuentos/Ideas but not Ideas Sueltas → must NOT reuse the partial name match",
     ),
     TestCase(
         "find_folder_among_many_files",
