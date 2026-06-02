@@ -501,7 +501,7 @@ async def test_find_folder_among_many_files(agent: TestAgent, drive: FakeDrive) 
     print(f"    created '{new_doc['name']}' inside '{target_folder['name']}'")
 
 
-async def test_nueva_idea_suelta_partial_name_collision(agent: TestAgent, drive: FakeDrive) -> None:
+async def test_partial_name_match_should_not_resolve_target(agent: TestAgent, drive: FakeDrive) -> None:
     """
     Production regression: Known Drive items contained Cuentos and its
     subfolder 'Ideas' (location='Cuentos') but NOT 'Ideas Sueltas'. The
@@ -676,8 +676,8 @@ ALL_TESTS: list[TestCase] = [
         "Read-only query → agent returns doc first line without modifying anything",
     ),
     TestCase(
-        "nueva_idea_suelta_partial_name_collision",
-        test_nueva_idea_suelta_partial_name_collision,
+        "partial_name_match_should_not_resolve_target",
+        test_partial_name_match_should_not_resolve_target,
         "Known items has Cuentos/Ideas but not Ideas Sueltas → must NOT reuse the partial name match",
     ),
     TestCase(
