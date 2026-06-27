@@ -18,30 +18,30 @@ class AgentMemory(ABC):
     async def update(self, user_email: str, new_items: list[DriveItem]) -> None:
         """Merge new_items into stored memory, incrementing access_freq for each."""
         all_items = await self._load_all(user_email)
-        merged = {i["id"]: i for i in all_items if i.get("id")}
+        merged: dict[str, DriveItem] = {i.id: i for i in all_items if i.id}
         for item in new_items:
-            d = item.model_dump()
             existing = merged.get(item.id)
-            d["access_freq"] = (existing.get("access_freq", 0) if existing else 0) + 1
-            merged[item.id] = d
-        await self._save_all(user_email, list(merged.values()))
+            freq = (existing.access_freq if existing else 0) + 1
+            merged[item.id] = item.model_copy(update={"access_freq": freq})
+        # access_freq is exclude=True, so re-add it explicitly for persistence.
+        to_save = [{**i.model_dump(), "access_freq": i.access_freq} for i in merged.values()]
+        await self._save_all(user_email, to_save)
         log.info("Saved %d Drive items to memory for %s", len(merged), user_email)
 
     @staticmethod
-    def _filter_context_items(items: list[dict]) -> list[dict]:
+    def _filter_context_items(items: list[DriveItem]) -> list[dict]:
         result = []
         for item in items:
-            freq = item.get("access_freq", 0)
-            if item.get("type") == "folder":
-                if freq >= 1:
-                    result.append(item)
+            if item.type == "folder":
+                if item.access_freq >= 1:
+                    result.append(item.model_dump())
             else:
-                if freq > 1:
-                    result.append(item)
+                if item.access_freq > 1:
+                    result.append(item.model_dump())
         return result
 
     @abstractmethod
-    async def _load_all(self, user_email: str) -> list[dict]: ...
+    async def _load_all(self, user_email: str) -> list[DriveItem]: ...
 
     @abstractmethod
     async def _save_all(self, user_email: str, items: list[dict]) -> None: ...

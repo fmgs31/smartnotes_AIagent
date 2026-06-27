@@ -347,7 +347,6 @@ class Agent:
     ) -> str:
         """Invoke the tool via MCP. Returns the result as a plain string. Raises on failure."""
         mcp_client = await self._get_or_open_client(server, request_ctxt)
-        t0 = time.perf_counter()
         raw = await mcp_client.call_tool(
             token=request_ctxt.token,
             tool_name=real_tool_name,

@@ -87,7 +87,6 @@ class Planner:
         """Ask the LLM for the next step in a multi-step plan."""
         schemas_json = json.dumps(tool_schemas or {}, ensure_ascii=False)
 
-        # history = steps[:-1] if steps else []
         history_section = (
             f"Earlier steps:\n{json.dumps(executed_steps, ensure_ascii=False)}\n\n"
         ) if executed_steps else ""
@@ -121,7 +120,6 @@ class Planner:
         log.info(f"Calling LLM now: Planning next step: remaining_steps={remaining_steps}, executed_steps={len(executed_steps or [])}")
         log.debug("plan_next_step user prompt:\n%s", core_context)
 
-        t0 = time.perf_counter()
         model = self._model_registry.resolve(planner_model)
         schema = self._STEP_ONLY_SCHEMA if model.summarizer_prompt else self._STEP_AND_SUMMARY_SCHEMA
         resp_text = await model.complete(

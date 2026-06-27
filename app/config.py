@@ -14,8 +14,6 @@ class Settings(BaseSettings):
     # Planner prompt map: JSON file of the form
     #   { "default_model": "<prefix>",
     #     "models": { "<prefix>": {"full_name": "...", "vendor": "...", "prompt_file": "..."} } }
-    # The resolved model is matched against "models" keys via str.startswith; if no entry
-    # matches, the prefix under "default_model" is used the same way.
     model_prompt_map_path: str = "app/prompts/model_prompt_map.json"
 
     # App-level API key (gates access from mobile app)

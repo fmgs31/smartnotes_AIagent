@@ -14,8 +14,9 @@ class StubMemory(AgentMemory):
         self._store: list[dict] = stored or []
         self.save_calls: list[tuple[str, list[dict]]] = []
 
-    async def _load_all(self, user_email: str) -> list[dict]:
-        return list(self._store)
+    async def _load_all(self, user_email: str) -> list[DriveItem]:
+        # Mirror the Firestore impl: stored dicts are deserialized into DriveItems.
+        return [DriveItem(**i) for i in self._store]
 
     async def _save_all(self, user_email: str, items: list[dict]) -> None:
         self._store = items
@@ -28,6 +29,10 @@ def _item(id: str, name: str, type: str = "document", freq: int = 0) -> dict:
     return {"id": id, "name": name, "type": type, "location": "/", "access_freq": freq}
 
 
+def _di(id: str, name: str, type: str = "document", freq: int = 0) -> DriveItem:
+    return DriveItem(id=id, name=name, type=type, access_freq=freq)
+
+
 def _drive_item(id: str, name: str, type: str = "document") -> DriveItem:
     return DriveItem(id=id, name=name, type=type)
 
@@ -35,57 +40,62 @@ def _drive_item(id: str, name: str, type: str = "document") -> DriveItem:
 # ── _filter_context_items ─────────────────────────────────────────────────────
 
 class TestFilterContextItems:
-    """AgentMemory._filter_context_items: per-type access_freq thresholds (folders: ≥1, files: ≥2)."""
+    """AgentMemory._filter_context_items: per-type access_freq thresholds (folders: ≥1, files: ≥2).
+
+    Input is DriveItems; output is plain dicts via model_dump (access_freq is exclude=True,
+    so it never reaches the planner context).
+    """
 
     def test_folder_with_freq_1_is_included(self):
         # Folders are cheap context → the threshold is 1.
-        items = [_item("f1", "Docs", type="folder", freq=1)]
+        items = [_di("f1", "Docs", type="folder", freq=1)]
         result = AgentMemory._filter_context_items(items)
-        assert result == items, (
-            f"Folder with freq=1 must be included. Expected {items!r}, got {result!r}"
+        ids = [i["id"] for i in result]
+        assert ids == ["f1"], f"Folder with freq=1 must be included, got {ids!r}"
+        assert "access_freq" not in result[0], (
+            f"access_freq must not leak into context output, got {result[0]!r}"
         )
 
     def test_folder_with_freq_0_is_excluded(self):
-        items = [_item("f1", "Docs", type="folder", freq=0)]
+        items = [_di("f1", "Docs", type="folder", freq=0)]
         result = AgentMemory._filter_context_items(items)
         assert result == [], (
             f"Folder with freq=0 must be excluded, got {result!r}"
         )
 
     def test_folder_missing_freq_is_excluded(self):
-        # No access_freq key at all → treated as 0 → excluded.
-        items = [{"id": "f1", "name": "Docs", "type": "folder"}]
+        # access_freq defaults to 0 → excluded.
+        items = [_di("f1", "Docs", type="folder")]
         result = AgentMemory._filter_context_items(items)
         assert result == [], (
-            f"Folder missing 'access_freq' must be excluded, got {result!r}"
+            f"Folder with default access_freq must be excluded, got {result!r}"
         )
 
     def test_file_with_freq_2_is_included(self):
         # Files need a higher threshold (2) to be worth the context budget.
-        items = [_item("d1", "Notes", freq=2)]
+        items = [_di("d1", "Notes", freq=2)]
         result = AgentMemory._filter_context_items(items)
-        assert result == items, (
-            f"File with freq=2 must be included. Expected {items!r}, got {result!r}"
-        )
+        ids = [i["id"] for i in result]
+        assert ids == ["d1"], f"File with freq=2 must be included, got {ids!r}"
 
     def test_file_with_freq_1_is_excluded(self):
-        items = [_item("d1", "Notes", freq=1)]
+        items = [_di("d1", "Notes", freq=1)]
         result = AgentMemory._filter_context_items(items)
         assert result == [], f"File with freq=1 must be excluded, got {result!r}"
 
     def test_file_with_freq_0_is_excluded(self):
-        items = [_item("d1", "Notes", freq=0)]
+        items = [_di("d1", "Notes", freq=0)]
         result = AgentMemory._filter_context_items(items)
         assert result == [], f"File with freq=0 must be excluded, got {result!r}"
 
     def test_mixed_items_filtered_correctly(self):
         # One mixed list exercises both thresholds + input order preservation.
         items = [
-            _item("f1", "Folder A", type="folder", freq=3),
-            _item("f2", "Folder B", type="folder", freq=0),
-            _item("d1", "Doc A", freq=2),
-            _item("d2", "Doc B", freq=1),
-            _item("d3", "Doc C", freq=0),
+            _di("f1", "Folder A", type="folder", freq=3),
+            _di("f2", "Folder B", type="folder", freq=0),
+            _di("d1", "Doc A", freq=2),
+            _di("d2", "Doc B", freq=1),
+            _di("d3", "Doc C", freq=0),
         ]
         result = AgentMemory._filter_context_items(items)
         ids = [i["id"] for i in result]

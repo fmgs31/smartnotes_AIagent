@@ -18,6 +18,14 @@ class InboundRequest(BaseModel):
     planner_model: str | None = None
 
 
+class DriveItem(BaseModel):
+    name: str
+    id: str
+    type: str
+    location: str = "/"
+    access_freq: int = Field(default=0, exclude=True)
+
+
 class NextStepPlan(BaseModel):
     last_step_check: str = ""
     pending_actions: str = ""
@@ -47,15 +55,6 @@ class ExecutedToolStep(BaseModel):
     tool_name: str
     arguments: Dict[str, Any] = Field(default_factory=dict)
     mcp_result: Any = None
-
-
-class DriveItem(BaseModel):
-    name: str
-    id: str
-    type: str
-    location: str = "/"
-    access_freq: int = Field(default=0, exclude=True)
-
 
 class FullTaskSummary(BaseModel):
     text: str

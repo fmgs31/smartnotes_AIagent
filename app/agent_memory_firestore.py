@@ -3,6 +3,7 @@ import logging
 from google.cloud.firestore_v1.async_client import AsyncClient
 
 from app.agent_memory import AgentMemory
+from app.schemas import DriveItem
 
 log = logging.getLogger("agent_memory_firestore")
 
@@ -13,11 +14,12 @@ class FirestoreAgentMemory(AgentMemory):
     def __init__(self, client: AsyncClient):
         self._db = client
 
-    async def _load_all(self, user_email: str) -> list[dict]:
+    async def _load_all(self, user_email: str) -> list[DriveItem]:
         try:
             doc = await self._db.collection(_COLLECTION).document(user_email).get()
             if doc.exists:
-                return doc.to_dict().get("items", [])
+                raw = doc.to_dict().get("items", [])
+                return [DriveItem(**item) for item in raw]
         except Exception:
             log.exception("Failed to load agent memory for %s", user_email)
         return []

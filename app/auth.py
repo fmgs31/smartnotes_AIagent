@@ -3,7 +3,7 @@ import logging
 import httpx
 from fastapi import HTTPException, Security
 from fastapi.security import APIKeyHeader
-
+import secrets
 from app.config import settings
 from app.utils import load_json
 
@@ -30,7 +30,7 @@ class Auth:
 
     def require_api_key(self, x_api_key: str | None = Security(_api_key_header)) -> None:
         """FastAPI dependency: reject requests with a missing or wrong API key."""
-        if x_api_key != self._api_key:
+        if not secrets.compare_digest(x_api_key or "", self._api_key):
             received = f"{len(x_api_key)} chars" if x_api_key else "none"
             log.debug(f"API key mismatch: received={received}, expected={len(self._api_key)} chars")
             raise HTTPException(status_code=401, detail="Invalid or missing API key")
@@ -45,12 +45,15 @@ class Auth:
             resp = await client.get(_GOOGLE_TOKENINFO_URL, params={"access_token": token})
 
         if resp.status_code != 200:
-            error_data = resp.json()
-            error_desc = (
-                error_data.get("error_description")
-                or error_data.get("error")
-                or "Unknown error"
-            )
+            try:
+                error_data = resp.json()
+                error_desc = (
+                    error_data.get("error_description")
+                    or error_data.get("error")
+                    or "Unknown error"
+                )
+            except ValueError:
+                error_desc = resp.text or "Unknown error"
             raise HTTPException(
                 status_code=401,
                 detail=f"Invalid or expired GCP token: {error_desc}",
