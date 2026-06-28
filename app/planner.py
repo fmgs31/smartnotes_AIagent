@@ -122,7 +122,7 @@ class Planner:
 
         model = self._model_registry.resolve(planner_model)
         schema = self._STEP_ONLY_SCHEMA if model.summarizer_prompt else self._STEP_AND_SUMMARY_SCHEMA
-        resp_text = await model.complete(
+        resp_text = await model.generate(
             input=[
                 {"role": "system", "content": model.prompt},
                 {"role": "user", "content": user},
@@ -182,7 +182,7 @@ class Planner:
             len(executed_steps or []),
         )
         t0 = time.perf_counter()
-        resp_text = await model.complete(
+        resp_text = await model.generate(
             input=[
                 {"role": "system", "content": model.summarizer_prompt},
                 {"role": "user", "content": user},

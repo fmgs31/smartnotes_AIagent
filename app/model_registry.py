@@ -29,10 +29,26 @@ def _retry_after_seconds(err: RateLimitError) -> float:
     return value / 1000.0 if m.group(2).lower() == "ms" else value
 
 
-def _make_openai_complete(full_name: str) -> Callable:
-    client = AsyncOpenAI()
+_openai_client: AsyncOpenAI | None = None
 
-    async def _call(*, input: list[dict], schema: dict) -> str:
+
+def get_openai_client() -> AsyncOpenAI:
+    """Return the process-wide AsyncOpenAI client, creating it on first use.
+
+    Shared by every model's generate callable and by the audio transcription
+    path in main.py so we keep a single connection pool instead of one per model.
+    """
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = AsyncOpenAI()
+    return _openai_client
+
+
+def _make_openai_generate_fn(full_name: str) -> Callable:
+    """Build the async generate callable for one OpenAI model (binds the model name)."""
+    client = get_openai_client()
+
+    async def _generate(*, input: list[dict], schema: dict) -> str:
         # Retry on OpenAI RateLimitError (HTTP 429). TPM is a rolling 1-minute
         # window, so chatty bursts (looping planner, functional tests) briefly
         # starve the next call. OpenAI returns the exact wait in the error body
@@ -62,18 +78,18 @@ def _make_openai_complete(full_name: str) -> Callable:
                 delay = max(_retry_after_seconds(err), 2.0 ** attempt)
                 await asyncio.sleep(delay)
 
-    return _call
+    return _generate
 
 
 # Vendor name -> factory: (full_name: str) -> async callable(*, input, schema) -> str
 # Add an entry here when introducing a new vendor.
 _CLIENT_FACTORIES: dict[str, Callable[[str], Callable]] = {
-    "open_ai": _make_openai_complete,
+    "open_ai": _make_openai_generate_fn,
 }
 
 
 class ResolvedModel:
-    """Everything needed to make one LLM call: name, prompt, and a vendor-agnostic complete callable."""
+    """Everything needed to make one LLM call: name, prompt, and a vendor-agnostic generate callable."""
 
     def __init__(
         self,
@@ -81,19 +97,19 @@ class ResolvedModel:
         full_name: str,
         prompt: str,
         vendor: str,
-        complete_fn: Callable,
+        generate_fn: Callable,
         summarizer_prompt: str | None = None,
     ):
         self.full_name = full_name
         self.prompt = prompt
         self.vendor = vendor
-        self._complete_fn = complete_fn
+        self._generate_fn = generate_fn
         # When set, the planner emits a lean next-step output (no summary fields)
         # and a separate LLM call with this prompt produces full_task_summary + items.
         self.summarizer_prompt = summarizer_prompt
 
-    async def complete(self, *, input: list[dict], schema: dict) -> str:
-        return await self._complete_fn(input=input, schema=schema)
+    async def generate(self, *, input: list[dict], schema: dict) -> str:
+        return await self._generate_fn(input=input, schema=schema)
 
 
 class ModelRegistry:
@@ -127,7 +143,7 @@ class ModelRegistry:
                 full_name=attrs["full_name"],
                 prompt=(prompts_folder / attrs["prompt_file"]).read_text(encoding="utf-8").strip(),
                 vendor=attrs["vendor"],
-                complete_fn=_CLIENT_FACTORIES[attrs["vendor"]](attrs["full_name"]),
+                generate_fn=_CLIENT_FACTORIES[attrs["vendor"]](attrs["full_name"]),
                 summarizer_prompt=_load_summarizer_prompt(attrs),
             )
             for name, attrs in models.items()

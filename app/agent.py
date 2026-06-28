@@ -115,23 +115,30 @@ class Agent:
         if not step_count and not done_plan:
             raise ValueError("Planner did not produce any executable step for this request")
 
-        if done_plan:
-            result = await self._planner.summarize(
-                text=request_ctxt.text,
-                done_plan=done_plan,
-                executed_steps=planning_context,
-                known_drive_items=request_ctxt.known_drive_items,
-                user_guidelines=request_ctxt.user_guidelines,
-                planner_model=request_ctxt.planner_model,
+        if not done_plan:
+            # Ran out of step budget before the planner signaled done. Surface this as a
+            # failure (→ ErrorEvent in stream / raise in execute) instead of returning an
+            # empty summary that looks like a successful but blank result.
+            raise RuntimeError(
+                f"Max steps ({self.max_plan_steps}) exhausted without the planner signaling "
+                "done; request did not complete"
             )
-        else:
-            log.warning("Max steps exhausted without done=true; summary may be empty")
-            result = FullTaskSummary(text="", items=[])
 
-        yield result
+        result = await self._planner.summarize(
+            text=request_ctxt.text,
+            done_plan=done_plan,
+            executed_steps=planning_context,
+            known_drive_items=request_ctxt.known_drive_items,
+            user_guidelines=request_ctxt.user_guidelines,
+            planner_model=request_ctxt.planner_model,
+        )
 
+        # Save before yielding the result: if the client disconnects right after the
+        # final event, a post-yield write would be skipped (generator never resumed).
         if self._agent_memory and request_ctxt.user_email and result.items:
             await self._agent_memory.update(request_ctxt.user_email, result.items)
+
+        yield result
 
 
     async def execute(

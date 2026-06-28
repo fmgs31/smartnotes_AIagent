@@ -5,14 +5,13 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
-from openai import AsyncOpenAI
 
 from app.auth import Auth, load_allowed_emails
 from app.config import settings
 from app.agent_memory_firestore import FirestoreAgentMemory
 from google.cloud.firestore_v1.async_client import AsyncClient
 from app.error_mapping import map_exception_to_http
-from app.model_registry import ModelRegistry
+from app.model_registry import ModelRegistry, get_openai_client
 from app.planner import Planner
 from app.logging_config import configure_app_logging
 from app.schemas import EventType, InboundRequest
@@ -36,7 +35,7 @@ class AudioRequest:
         self.planner_model = planner_model
 
 app = FastAPI(title="MCP + LLM Gateway", version="1.0.0")
-openai_client = AsyncOpenAI()
+openai_client = get_openai_client()
 
 registry = ServerRegistry.load_from_file(settings.servers_config_path)
 for _srv in registry.all():
