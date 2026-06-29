@@ -294,6 +294,7 @@ class Agent:
             "server_id": server_id,
             "next_tool": tool_name,
             "arguments": arguments,
+            "locked_facts": next_step.locked_facts,
             "result_summary": result_summary,
         })
         return ExecutedToolStep(

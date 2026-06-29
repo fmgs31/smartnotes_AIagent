@@ -29,6 +29,7 @@ class DriveItem(BaseModel):
 class NextStepPlan(BaseModel):
     last_step_check: str = ""
     pending_actions: str = ""
+    locked_facts: str = ""
     next_tool_explanation: str | None = None
     next_tool: str = ""
     arguments: Dict[str, Any] = Field(default_factory=dict)
@@ -43,7 +44,7 @@ class NextStepPlan(BaseModel):
             return {}
         return v
 
-    @field_validator("last_step_check", "next_tool", "full_task_summary", mode="before")
+    @field_validator("last_step_check", "locked_facts", "next_tool", "full_task_summary", mode="before")
     @classmethod
     def _coerce_none_to_empty_string(cls, v: Any) -> Any:
         return "" if v is None else v

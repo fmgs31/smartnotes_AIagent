@@ -82,17 +82,17 @@ class TestResolve:
         )
 
     def test_uses_correct_factory_per_vendor(self, write_prompt_map, tmp_path):
-        # The ModelEntry's _complete_fn must come from the vendor-specific factory.
-        map_path, complete_mocks = write_prompt_map(
+        # The ModelEntry's _generate_fn must come from the vendor-specific factory.
+        map_path, generate_mocks = write_prompt_map(
             default_model="gpt-5-nano",
             models={
                 "gpt-5-nano": {"full_name": "gpt-5-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_nano.txt"},
             },
         )
         registry = _build(map_path, tmp_path)
-        fn = registry.resolve("gpt-5-nano")._complete_fn
-        assert fn is complete_mocks["open_ai"], (
-            f"Expected _complete_fn to be the open_ai vendor mock, got {fn!r}"
+        fn = registry.resolve("gpt-5-nano")._generate_fn
+        assert fn is generate_mocks["open_ai"], (
+            f"Expected _generate_fn to be the open_ai vendor mock, got {fn!r}"
         )
 
 

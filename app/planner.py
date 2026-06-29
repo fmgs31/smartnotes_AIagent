@@ -33,6 +33,7 @@ class Planner:
         "properties": {
             "last_step_check": {"type": "string"},
             "pending_actions": {"type": "string"},
+            "locked_facts": {"type": "string"},
             "next_tool_explanation": {"type": "string"},
             "next_tool": {"type": "string"},
             "arguments": {"type": "object", "additionalProperties": True},
@@ -51,6 +52,7 @@ class Planner:
         "properties": {
             "last_step_check": {"type": "string"},
             "pending_actions": {"type": "string"},
+            "locked_facts": {"type": "string"},
             "next_tool_explanation": {"type": "string"},
             "next_tool": {"type": "string"},
             "arguments": {"type": "object", "additionalProperties": True},
