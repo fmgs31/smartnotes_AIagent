@@ -1,0 +1,2 @@
+set -a && source .env && set +a
+./deploy_all.sh
