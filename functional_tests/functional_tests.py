@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Callable, Awaitable
 
 from app.agent import Agent
+from app.agent_memory import AgentMemory
 from app.model_registry import ModelRegistry
 from app.planner import Planner
-from app.schemas import ExecutedToolStep, FullTaskSummary
+from app.schemas import DriveItem, ExecutedToolStep, FullTaskSummary
 from app.server_registry import ServerConfig, ServerRegistry
 from functional_tests.fake_drive import FakeDrive, FakeMCPClient, MIME_DOC, MIME_FOLDER
 from functional_tests.test_config import (
@@ -44,10 +45,17 @@ class TestAgent(Agent):
     Everything else (Planner, tool discovery, planning loop) runs as normal.
     """
 
-    def __init__(self, fake_drive: FakeDrive, planner: Planner, max_plan_steps: int = 10, planner_model: str | None = None):
+    def __init__(
+        self,
+        fake_drive: FakeDrive,
+        planner: Planner,
+        max_plan_steps: int = 10,
+        planner_model: str | None = None,
+        agent_memory: AgentMemory | None = None,
+    ):
         cfg = _load_server_config()
         registry = ServerRegistry(servers={cfg.id: cfg})
-        super().__init__(registry=registry, planner=planner, max_plan_steps=max_plan_steps)
+        super().__init__(registry=registry, planner=planner, max_plan_steps=max_plan_steps, agent_memory=agent_memory)
         self._fake_drive = fake_drive
         self.planner_model = planner_model
 
@@ -61,6 +69,19 @@ class TestAgent(Agent):
         )
         request_ctxt.clients[server.id] = fake_client
         return fake_client
+
+
+class InMemoryAgentMemory(AgentMemory):
+    """Dict-backed AgentMemory with FirestoreAgentMemory's storage semantics."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, list[dict]] = {}
+
+    async def _load_all(self, user_email: str) -> list[DriveItem]:
+        return [DriveItem(**item) for item in self._store.get(user_email, [])]
+
+    async def _save_all(self, user_email: str, items: list[dict]) -> None:
+        self._store[user_email] = items
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -155,10 +176,13 @@ async def test_append_terapia(agent: TestAgent, drive: FakeDrive) -> None:
     terapia = drive.find_by_name("Terapia", MIME_DOC)
     assert terapia, "Terapia document not found in drive."
     content = drive.contents.get(terapia["id"], "")
-    # Original content must be fully intact at the start (not garbled by mid-doc insert)
-    assert content.startswith(TERAPIA_INITIAL_CONTENT), (
+    # Original content must be fully intact at the start. A correct append lands
+    # at the last valid insertion index — just BEFORE the doc's final newline —
+    # so the guaranteed prefix is the original minus that trailing newline.
+    original_prefix = TERAPIA_INITIAL_CONTENT.rstrip("\n")
+    assert content.startswith(original_prefix), (
         f"Original content was modified or inserted into.\n"
-        f"expected prefix: {repr(TERAPIA_INITIAL_CONTENT)}\n"
+        f"expected prefix: {repr(original_prefix)}\n"
         f"content: {repr(content)}"
     )
     # New content must appear exactly once — no duplicate or split inserts
@@ -625,6 +649,139 @@ async def test_read_terapia_first_line(agent: TestAgent, drive: FakeDrive) -> No
     print(f"    summary: {result.text[:200]}")
 
 
+async def test_append_terapia_tabbed_doc(agent: TestAgent, drive: FakeDrive) -> None:
+    """
+    Production incident (2026-07-12): the real Terapia doc is tab-based. The
+    server's inspect_doc_structure (documents.get with includeTabsContent=True)
+    reports total_length=0 with only a tabs list when called without tab_id;
+    the planner then looped on modify_doc_text(start_index=0, tab_id='t.0') →
+    Docs API 400, burning all steps.
+
+    The fake mirrors that real server behavior; the agent's
+    TabAwareInspectRefiner (app/tool_refiners.py) must transparently re-inspect
+    with the first tab_id so the planner gets the real total_length in one
+    planning step and appends at the END without corrupting the original.
+    """
+    terapia = drive.find_by_name("Terapia", MIME_DOC)
+    assert terapia, "Terapia document not found in drive."
+    drive.make_tabbed(terapia["id"], "Terapia")
+
+    ids_before = set(drive.items.keys())
+    result, steps = await run_agent(agent, drive, "Terapia: hoy hablamos sobre la gratitud")
+
+    content = drive.contents.get(terapia["id"], "")
+    # Original content fully intact at the start. A correct append lands at the
+    # last valid insertion index — just BEFORE the doc's final newline — so the
+    # guaranteed prefix is the original minus that trailing newline.
+    original_prefix = TERAPIA_INITIAL_CONTENT.rstrip("\n")
+    assert content.startswith(original_prefix), (
+        f"Original content was modified or inserted into.\n"
+        f"expected prefix: {repr(original_prefix)}\n"
+        f"content: {repr(content)}"
+    )
+    occurrences = content.count("gratitud")
+    assert occurrences == 1, (
+        f"Expected new content to appear exactly once, got {occurrences}.\ncontent={repr(content)}"
+    )
+    new_docs = _new_docs(drive, ids_before)
+    assert not new_docs, (
+        f"LLM created a new doc instead of appending: {[d['name'] for d in new_docs]}"
+    )
+    item_ids = {i.id for i in result.items}
+    assert terapia["id"] in item_ids, (
+        f"Terapia doc not in summary items. items={[i.name for i in result.items]}"
+    )
+    _assert_no_known_item_searches(drive)
+    loops = _loop_warnings(steps)
+    if loops:
+        print(f"    WARNING loop retries: {loops}")
+    print(f"    doc tail: {repr(content[-150:])}")
+
+
+async def test_memory_surfaces_used_spreadsheet(agent: TestAgent, drive: FakeDrive) -> None:
+    """
+    Production incident (2026-07-12): after appending a row to 'Prototipo
+    Juego' the spreadsheet did not show up in Known Drive items.
+
+    Covers the full persistence chain against the DESIGNED thresholds in
+    agent_memory.py — folders surface after 1 access, files only after 2:
+    - run 1 (memory empty): resolve sheet by name, write, summarizer emits it,
+      memory stores it with access_freq=1 → NOT yet surfaced.
+    - run 2 (same trigger, new idea): sheet still absent from Known Drive
+      items, resolved again, freq bumps to 2 → surfaced for the next request.
+    """
+    memory = InMemoryAgentMemory()
+    email = "test@example.com"
+    mem_agent = TestAgent(
+        fake_drive=drive,
+        planner=agent._planner,
+        max_plan_steps=10,
+        planner_model=agent.planner_model,
+        agent_memory=memory,
+    )
+
+    async def run(text: str):
+        print(f"Request: {text}")
+        result, steps = await mem_agent.execute(
+            text=text,
+            token="fake-token",
+            user_email=email,
+            user_guidelines=USER_GUIDELINES,
+            planner_model=mem_agent.planner_model,
+        )
+        assert result is not None, "Agent returned no FullTaskSummary"
+        return result, steps
+
+    # ── run 1 — memory empty, planner must resolve the sheet by name ─────────
+    result1, steps1 = await run(
+        "idea para el juego de mesa: los turnos deberían tener un límite "
+        "de tiempo para que las partidas no se alarguen"
+    )
+
+    sheet = drive.find_by_name("Prototipo Juego")
+    assert sheet, "Prototipo Juego spreadsheet not found."
+    all_text = " ".join(
+        str(c) for rows in drive.sheets.get(sheet["id"], {}).values() for r in rows for c in r
+    ).lower()
+    assert "límite" in all_text or "turnos" in all_text or "alarguen" in all_text, (
+        f"Idea content not written to any tab of the spreadsheet.\nsheets={drive.sheets.get(sheet['id'])}"
+    )
+
+    stored = {i.id: i.access_freq for i in await memory._load_all(email)}
+    assert sheet["id"] in stored, (
+        f"Spreadsheet not persisted to agent memory after a successful write. "
+        f"summary items={[(i.name, i.id) for i in result1.items]} stored={stored}"
+    )
+    context_ids = {i["id"] for i in await memory.load_context_items(email)}
+    assert sheet["id"] not in context_ids, (
+        f"File surfaced after a single access — files require access_freq > 1 by design. "
+        f"stored={stored} context={context_ids}"
+    )
+
+    # ── run 2 — same trigger, different idea → freq bumps to 2 ───────────────
+    result2, steps2 = await run(
+        "idea para el juego de mesa: incluir cartas de evento que cambien "
+        "las reglas durante una ronda"
+    )
+
+    stored = {i.id: i.access_freq for i in await memory._load_all(email)}
+    assert stored.get(sheet["id"], 0) >= 2, (
+        f"Spreadsheet access_freq not incremented on second use. "
+        f"summary items={[(i.name, i.id) for i in result2.items]} stored={stored}"
+    )
+    context_ids = {i["id"] for i in await memory.load_context_items(email)}
+    assert sheet["id"] in context_ids, (
+        f"Spreadsheet used in two successful runs must be surfaced to the next request. "
+        f"stored={stored} context={context_ids}"
+    )
+
+    for label, steps in (("run1", steps1), ("run2", steps2)):
+        loops = _loop_warnings(steps)
+        if loops:
+            print(f"    WARNING {label} loop retries: {loops}")
+    print(f"    memory context items: {sorted(context_ids)}")
+
+
 # ─── Registry ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -684,5 +841,15 @@ ALL_TESTS: list[TestCase] = [
         "find_folder_among_many_files",
         test_find_folder_among_many_files,
         "Folder lookup must use file_type='folder' when parent has 100+ same-named files",
+    ),
+    TestCase(
+        "append_terapia_tabbed_doc",
+        test_append_terapia_tabbed_doc,
+        "Tab-based doc: TabAwareInspectRefiner supplies real length → append lands at the end",
+    ),
+    TestCase(
+        "memory_surfaces_used_spreadsheet",
+        test_memory_surfaces_used_spreadsheet,
+        "Memory chain: file stored on 1st use (not yet surfaced), surfaced after 2nd use",
     ),
 ]

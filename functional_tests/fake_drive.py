@@ -100,6 +100,8 @@ class FakeDrive:
         # sheet id → {tab_name → [[row...]]}
         self.sheets: dict[str, dict[str, list]] = copy.deepcopy(tmpl["sheets"])
         self._counter: int = tmpl["counter"]
+        # doc id → [{"title", "tab_id"}] — docs marked as tab-based (newer Google Docs)
+        self.doc_tabs: dict[str, list[dict]] = {}
         self._call_log: list[dict] = []
         self._step: int = 0
 
@@ -215,6 +217,12 @@ class FakeDrive:
     def write_doc(self, item_id: str, content: str) -> None:
         self.contents[item_id] = content
 
+    def make_tabbed(self, item_id: str, tab_title: str | None = None) -> dict:
+        """Mark a doc as tab-based; its content stays in self.contents."""
+        tab = {"title": tab_title or self.items[item_id]["name"], "tab_id": "t.0"}
+        self.doc_tabs[item_id] = [tab]
+        return tab
+
     def write_sheet_tab(self, item_id: str, tab_name: str, rows: list) -> None:
         self.sheets.setdefault(item_id, {})[tab_name] = rows
 
@@ -242,11 +250,30 @@ def _col_to_idx(col: str) -> int:
     return r - 1
 
 
+def _a1_range_error(range_str: str) -> str | None:
+    """
+    Mirror the real Sheets API grammar: a tab name containing spaces or other
+    non-alphanumeric characters MUST be wrapped in single quotes, otherwise the
+    API rejects the range with 400 'Unable to parse range'.
+    """
+    if "!" not in range_str:
+        return None
+    sheet, _ = range_str.split("!", 1)
+    if sheet.startswith("'") and sheet.endswith("'") and len(sheet) >= 2:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_]+", sheet):
+        return f"[Tool error] API error: Unable to parse range: {range_str}"
+    return None
+
+
 def _parse_range(range_str: str) -> tuple[str | None, int, int, int | None, int | None]:
     """'Sheet1!A2:B5' -> (sheet_name, start_row, start_col, end_row, end_col) 0-based."""
     sheet_name = None
     if "!" in range_str:
         sheet_name, range_str = range_str.split("!", 1)
+        # Strip A1 single-quoting ('Ideas suelta 1' → Ideas suelta 1, '' → ')
+        if sheet_name.startswith("'") and sheet_name.endswith("'") and len(sheet_name) >= 2:
+            sheet_name = sheet_name[1:-1].replace("''", "'")
     m = re.match(r"([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?", range_str)
     if not m:
         return sheet_name, 0, 0, None, None
@@ -587,16 +614,39 @@ class FakeMCPClient:
             f"Link: https://docs.example/d/{item['id']}/edit"
         )
 
-    async def _tool_inspect_doc_structure(self, document_id: str, **_) -> str:
+    async def _tool_inspect_doc_structure(self, document_id: str, tab_id: str | None = None, **_) -> str:
         item = self._drive.items.get(document_id)
         if not item:
             return f"[Tool error] Document '{document_id}' not found."
         content = self._drive.contents.get(document_id, "")
-        result = {
-            "total_length": max(1, len(content)),
-            "tables": 0,
-            "statistics": {"elements": content.count("\n") + 1},
-        }
+        tabs = self._drive.doc_tabs.get(document_id)
+        if tabs and tab_id is None:
+            # Mirror the real server: documents.get(includeTabsContent=True) leaves
+            # the top-level body empty for tab-based docs, so a no-tab_id inspection
+            # reports total_length=0 and only lists the available tabs. The agent's
+            # TabAwareInspectRefiner is expected to re-call with the first tab_id.
+            result = {
+                "total_elements": 0,
+                "tables": 0,
+                "paragraphs": 0,
+                "total_length": 0,
+                "tabs": tabs,
+            }
+        elif tabs:
+            if not any(t["tab_id"] == tab_id for t in tabs):
+                return f"Error: Tab {tab_id} not found in document."
+            result = {
+                "total_length": max(1, len(content)),
+                "tables": 0,
+                "statistics": {"elements": content.count("\n") + 1},
+                "inspected_tab_id": tab_id,
+            }
+        else:
+            result = {
+                "total_length": max(1, len(content)),
+                "tables": 0,
+                "statistics": {"elements": content.count("\n") + 1},
+            }
         return (
             f"Document structure analysis for {document_id}:\n\n"
             f"{json.dumps(result, indent=2)}\n\n"
@@ -609,6 +659,7 @@ class FakeMCPClient:
         start_index: int,
         end_index: int | None = None,
         text: str | None = None,
+        tab_id: str | None = None,
         **_,
     ) -> str:
         item = self._drive.items.get(document_id)
@@ -616,11 +667,34 @@ class FakeMCPClient:
             return f"[Tool error] Document '{document_id}' not found."
         if text is None:
             return f"Applied formatting to document {document_id}."
+        if tab_id is not None:
+            tabs = self._drive.doc_tabs.get(document_id)
+            if tabs and not any(t["tab_id"] == tab_id for t in tabs):
+                return f"[Tool error] Tab {tab_id} not found in document."
+            # Mirror the real server: its 0→1 index auto-correction only fires when
+            # tab_id is None; with a tab_id the raw 0 reaches the Docs API → 400.
+            if start_index == 0:
+                return (
+                    "[Tool error] API error in modify_doc_text: <HttpError 400 ... returned "
+                    '"Invalid requests[0].insertText: The insertion index must be inside the '
+                    "bounds of an existing paragraph. You can still create new paragraphs by "
+                    'inserting newlines.">'
+                )
         content = self._drive.contents.get(document_id, "")
         if end_index is not None and end_index > start_index:
             new_content = content[:start_index] + text + content[end_index:]
         else:
-            new_content = content + text if start_index >= len(content) else content[:start_index] + text + content[start_index:]
+            # Mirror the real Docs API: an insertion index must be strictly below
+            # the segment end (= inspect's total_length). Inserting AT the end
+            # index is rejected; the last valid index sits before the final newline.
+            segment_end = max(1, len(content))
+            if start_index >= segment_end:
+                return (
+                    f"[Tool error] API error in modify_doc_text: <HttpError 400 ... returned "
+                    f'"Invalid requests[0].insertText: Index {start_index} must be less than '
+                    f'the end index of the referenced segment, {segment_end}.">'
+                )
+            new_content = content[:start_index] + text + content[start_index:]
         self._drive.write_doc(document_id, new_content)
         return (
             f"Inserted text at index {start_index} in document {document_id}. "
@@ -813,6 +887,9 @@ class FakeMCPClient:
         range_name: str = "A1:Z1000",
         **_,
     ) -> str:
+        err = _a1_range_error(range_name)
+        if err:
+            return err
         sn, sr, _, er, _ = _parse_range(range_name)
         item, _, rows = self._resolve_sheet(spreadsheet_id, sn)
         if item is None:
@@ -835,6 +912,9 @@ class FakeMCPClient:
         clear_values: bool = False,
         **_,
     ) -> str:
+        err = _a1_range_error(range_name)
+        if err:
+            return err
         sn, sr, sc, _, _ = _parse_range(range_name)
         item, sheet_name, rows = self._resolve_sheet(spreadsheet_id, sn)
         if item is None:

@@ -543,8 +543,9 @@ class TestFakeMCPClientDispatch:
             f"Expected Terapia.trashed=True after update, got {terapia.get('trashed')!r}"
         )
 
-    async def test_modify_doc_text_appends(self, client, drive):
-        # start_index at EOF + new text → content is appended, original preserved.
+    async def test_modify_doc_text_rejects_insert_at_segment_end(self, client, drive):
+        # Mirrors the real Docs API: inserting AT the end index (inspect's
+        # total_length) is rejected — the index must be strictly below it.
         terapia = drive.find_by_name("Terapia")
         original = drive.contents[terapia["id"]]
         result = await self._call(
@@ -553,10 +554,26 @@ class TestFakeMCPClientDispatch:
             start_index=len(original),
             text="\nappended text",
         )
+        assert "must be less than the end index" in result, result
+        assert drive.contents[terapia["id"]] == original, "Content changed on a rejected insert"
+
+    async def test_modify_doc_text_appends(self, client, drive):
+        # start_index at the last valid index (segment end - 1, just before the
+        # final newline) + new text → content is appended, original prefix preserved.
+        terapia = drive.find_by_name("Terapia")
+        original = drive.contents[terapia["id"]]
+        result = await self._call(
+            client, "modify_doc_text",
+            document_id=terapia["id"],
+            start_index=len(original) - 1,
+            text="\nappended text",
+        )
         assert "Inserted" in result, f"Expected 'Inserted' in result, got: {result!r}"
         new = drive.contents[terapia["id"]]
         assert "appended text" in new, f"Appended text not found in new content: {new!r}"
-        assert original in new, f"Original content was not preserved after append; got: {new!r}"
+        assert new.startswith(original.rstrip("\n")), (
+            f"Original content was not preserved after append; got: {new!r}"
+        )
 
     async def test_modify_doc_text_range_replace(self, client, drive):
         # start_index=1, end_index=len-1 → replace the interior, keep first and last chars.

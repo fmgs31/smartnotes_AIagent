@@ -10,6 +10,7 @@ from app.planner import Planner
 from app.mcp_client import MCPClient
 from app.schemas import ErrorEvent, EventType, ExecutedToolStep, NextStepPlan, FullTaskSummary
 from app.server_registry import ServerConfig, ServerRegistry
+from app.tool_refiners import DEFAULT_REFINERS, ToolResultRefiner
 from app.utils import stable_json
 
 log = logging.getLogger("agent")
@@ -45,11 +46,13 @@ class Agent:
         planner: Planner,
         max_plan_steps: int,
         agent_memory: AgentMemory | None = None,
+        tool_refiners: tuple[ToolResultRefiner, ...] = DEFAULT_REFINERS,
     ):
         self.registry = registry
         self._planner = planner
         self.max_plan_steps = max_plan_steps
         self._agent_memory = agent_memory
+        self._tool_refiners = tool_refiners
         # Maps fully-qualified tool id -> (server_config, real_tool_name)
         self._tool_id_to_tool: dict[str, tuple[ServerConfig, str]] = {}
         # Maps fully-qualified tool id -> input schema (as returned by list_tools)
@@ -355,13 +358,58 @@ class Agent:
     ) -> str:
         """Invoke the tool via MCP. Returns the result as a plain string. Raises on failure."""
         mcp_client = await self._get_or_open_client(server, request_ctxt)
-        raw = await mcp_client.call_tool(
-            token=request_ctxt.token,
-            tool_name=real_tool_name,
-            arguments=arguments,
-        )
+        try:
+            raw = await mcp_client.call_tool(
+                token=request_ctxt.token,
+                tool_name=real_tool_name,
+                arguments=arguments,
+            )
+        except Exception as exc:
+            # Give refiners a shot at repairing a failed call (e.g. an index
+            # rejected by the Docs API). Unrefined failures propagate as before.
+            refined = await self._refine_result(
+                step_idx, mcp_client, request_ctxt, real_tool_name, arguments, f"[Tool error] {exc}"
+            )
+            if refined is None:
+                raise
+            return refined
         result = self._extract_result_text(raw)
-        return result
+        refined = await self._refine_result(
+            step_idx, mcp_client, request_ctxt, real_tool_name, arguments, result
+        )
+        return result if refined is None else refined
+
+    async def _refine_result(
+        self,
+        step_idx: int,
+        mcp_client: MCPClient,
+        request_ctxt: _RequestContext,
+        real_tool_name: str,
+        arguments: dict,
+        result: str,
+    ) -> str | None:
+        """
+        Single refinement pass (see tool_refiners): the first applicable refiner
+        gets one follow-up call to the same tool and its result replaces the
+        original. Returns None when no refiner applied.
+        """
+        for refiner in self._tool_refiners:
+            if not refiner.applies(real_tool_name, arguments, result):
+                continue
+            refined_args = refiner.refined_arguments(arguments, result)
+            if not refined_args:
+                continue
+            log.info(
+                "Step=%s %s result refined by %s → follow-up args=%s",
+                step_idx, real_tool_name, type(refiner).__name__, refined_args,
+            )
+            raw = await mcp_client.call_tool(
+                token=request_ctxt.token,
+                tool_name=real_tool_name,
+                arguments=refined_args,
+            )
+            return self._extract_result_text(raw)
+        return None
 
     async def _ensure_tools_discovered(self, request_ctxt: _RequestContext) -> None:
         """
