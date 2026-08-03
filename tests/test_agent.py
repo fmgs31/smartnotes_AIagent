@@ -315,8 +315,8 @@ class TestHandleText:
         )
 
     @patch("app.agent.MCPClient")
-    async def test_summarize_not_called_when_max_steps_exhausted(self, mock_mcp_cls):
-        """No done_plan → no summarize call; agent falls back to an empty summary."""
+    async def test_max_steps_exhausted_raises(self, mock_mcp_cls):
+        """No done_plan → raise rather than return a blank summary that looks successful."""
         mock_plan = AsyncMock()
         svc, servers = _make_agent(planner=mock_plan)
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
@@ -327,18 +327,15 @@ class TestHandleText:
         ]
         mock_mcp_cls.return_value = _mcp_mock(call_result="result")
 
-        result, _steps = await svc.execute(text="loop", token="tok")
+        with pytest.raises(RuntimeError, match="Max steps"):
+            await svc.execute(text="loop", token="tok")
 
         mock_plan.summarize.assert_not_awaited()
-        assert result.text == "", (
-            f"Expected empty summary text when max_plan_steps exhausted without done=true, got {result.text!r}"
-        )
-        assert result.items == [], f"Expected empty items list, got {result.items!r}"
 
     @patch("app.agent.MCPClient")
-    async def test_max_steps_exhausted_returns_all_steps(self, mock_mcp_cls):
-        # Planner never emits done=true → agent caps at max_plan_steps and returns
-        # every executed step, with no summary text (summarize never runs).
+    async def test_max_steps_exhausted_runs_the_whole_budget(self, mock_mcp_cls):
+        # Planner never emits done=true → agent uses every step of the budget before
+        # giving up, and does not stop early.
         mock_plan = AsyncMock()
         svc, servers = _make_agent(planner=mock_plan)
         svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
@@ -348,15 +345,19 @@ class TestHandleText:
             NextStepPlan(done=False, next_tool="test-server.search", arguments={"q": str(i)})
             for i in range(svc.max_plan_steps)
         ]
-        mock_mcp_cls.return_value = _mcp_mock(call_result="result")
+        mock_client = _mcp_mock(call_result="result")
+        mock_mcp_cls.return_value = mock_client
 
-        procedure, steps = await svc.execute(text="keep going", token="tok")
+        with pytest.raises(RuntimeError, match="Max steps"):
+            await svc.execute(text="keep going", token="tok")
 
-        assert len(steps) == svc.max_plan_steps, (
-            f"Expected exactly max_plan_steps ({svc.max_plan_steps}) steps, got {len(steps)}"
+        assert mock_plan.plan_next_step.await_count == svc.max_plan_steps, (
+            f"Expected exactly max_plan_steps ({svc.max_plan_steps}) planner calls, "
+            f"got {mock_plan.plan_next_step.await_count}"
         )
-        assert procedure.text == "", (
-            f"Expected empty summary text when max_plan_steps exhausted, got {procedure.text!r}"
+        assert mock_client.call_tool.await_count == svc.max_plan_steps, (
+            f"Expected exactly max_plan_steps ({svc.max_plan_steps}) tool calls, "
+            f"got {mock_client.call_tool.await_count}"
         )
 
 
