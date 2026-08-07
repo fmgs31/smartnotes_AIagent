@@ -16,6 +16,8 @@ class InboundRequest(BaseModel):
     mcp_token: str = Field(..., min_length=1)
     user_guidelines: str | None = None
     planner_model: str | None = None
+    # IANA zone name of the caller (e.g. "Europe/Madrid"). Unset or unknown -> UTC.
+    timezone: str | None = None
 
 
 class DriveItem(BaseModel):

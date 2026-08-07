@@ -7,3 +7,5 @@ tenacity>=8.0.0
 httpx>=0.28.0
 python-multipart>=0.0.9
 google-cloud-firestore>=2.19.0
+# zoneinfo needs a tz database: Windows has none and slim containers often drop it.
+tzdata>=2024.1

@@ -196,6 +196,7 @@ JSON body ([`InboundRequest`](app/schemas.py)):
 | `mcp_token` | yes | Google OAuth access token — used both to call Google and to identify/authorize the user |
 | `user_guidelines` | no | Free-text personal rules injected into the planner prompt (e.g. "'nueva idea suelta' → create a doc in `Ideas Sueltas`") |
 | `planner_model` | no | Model key from the prompt registry; falls back to `default_model` |
+| `timezone` | no | IANA zone of the caller, e.g. `Europe/Madrid`. The planner resolves "yesterday", "last Monday" against it. Omitted or unknown ⇒ UTC. Clients get it from `Intl.DateTimeFormat().resolvedOptions().timeZone` |
 
 ```bash
 curl -N http://localhost:8001/run \
@@ -207,8 +208,8 @@ curl -N http://localhost:8001/run \
 ### `POST /run-audio`
 
 `multipart/form-data`: an `audio` file part plus the form fields `mcp_token`,
-`user_guidelines` and `planner_model`. The clip is transcribed with `whisper-1`
-and then handled exactly like `/run`.
+`user_guidelines`, `planner_model` and `timezone` — same meanings as above. The
+clip is transcribed with `whisper-1` and then handled exactly like `/run`.
 
 ### SSE events
 
@@ -343,7 +344,35 @@ single source of truth for which model runs with which prompt:
   summary itself in the same call instead of a second one.
 
 The `app/prompts/v1/ … v14/` directories are an **archive** of superseded
-prompts. They are not loaded; only the files named in the JSON are.
+prompts. They are not loaded; only the files named in the JSON are — a file
+sitting in `app/prompts/planner/` is not live until an entry points at it.
+[planner/v15.txt](app/prompts/planner/v15.txt) is currently such a
+candidate: it is v14 plus a tool-menu gate and a date rule, and nothing runs it.
+
+### Prompt layout — what goes in which message
+
+[app/planner.py](app/planner.py) splits the prompt by how often each part
+changes, because OpenAI caches the prompt *prefix*:
+
+| Message | Contents | Changes |
+| --- | --- | --- |
+| `system` | the prompt file, then `Allowed tools (IDs)`, `Tool input schemas`, and last of all `Current date and time` | tools/schemas never — discovery is cached process-wide; the timestamp once per request |
+| `user` | request text, known Drive items, step history, last step result, user guidelines | every request, and the history every step |
+
+Everything the *app* asserts — what the planner may call, and what time it is —
+is system context. The user turn holds only the request and what the tools
+returned for it. Two reasons beyond tidiness: the tool list and schemas sit
+inside the cached prompt prefix instead of being re-billed behind the growing
+step history on every step, and neither the capability list nor the clock can be
+contradicted by user-controlled text sharing the same turn.
+
+Order inside `system` matters. The timestamp goes **last**, after the schemas,
+because it is the only part that varies — everything before it stays cacheable.
+
+The timestamp is resolved **once per request** from the client's `timezone`
+(`2026-08-03T00:30-04:00 (Monday, America/New_York)`) and reused by every
+planning step and by the summarizer, so it does not shift the prefix
+mid-request.
 
 ---
 

@@ -29,10 +29,12 @@ class AudioRequest:
         mcp_token: str = Form(...),
         user_guidelines: str | None = Form(None),
         planner_model: str | None = Form(None),
+        timezone: str | None = Form(None),
     ):
         self.mcp_token = mcp_token
         self.user_guidelines = user_guidelines
         self.planner_model = planner_model
+        self.timezone = timezone
 
 app = FastAPI(title="MCP + LLM Gateway", version="1.0.0")
 openai_client = get_openai_client()
@@ -76,6 +78,7 @@ async def run(req: InboundRequest):
             user_email=email,
             user_guidelines=req.user_guidelines,
             planner_model=req.planner_model,
+            timezone=req.timezone,
         ):
             yield _sse(event)
 
@@ -115,6 +118,7 @@ async def run_audio(audio: UploadFile = File(...), req: AudioRequest = Depends()
             user_email=email,
             user_guidelines=req.user_guidelines,
             planner_model=req.planner_model,
+            timezone=req.timezone,
         ):
             yield _sse(event)
 

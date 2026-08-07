@@ -1,12 +1,20 @@
 import json
 import logging
 import time
-from datetime import date
+from datetime import datetime
 
 from app.model_registry import ModelRegistry
 from app.schemas import DriveItem, NextStepPlan, FullTaskSummary
+from app.utils import now_in_timezone
 from pydantic import ValidationError
 log = logging.getLogger("planner")
+
+
+def _now_line(now: datetime | None) -> str:
+    """Render the request timestamp with its offset and zone so the model can resolve
+    relative dates ("yesterday", "last Monday") for a caller in any timezone."""
+    now = now or now_in_timezone(None)
+    return f"Current date and time: {now.isoformat(timespec='minutes')} ({now:%A}, {now.tzinfo})\n\n"
 
 
 _DRIVE_ITEM_SCHEMA = {
@@ -85,6 +93,7 @@ class Planner:
         tool_schemas: dict[str, dict] | None = None,
         executed_steps: list[dict] | None = None,
         remaining_steps: int = 1,
+        now: datetime | None = None,
     ) -> NextStepPlan:
         """Ask the LLM for the next step in a multi-step plan."""
         schemas_json = json.dumps(tool_schemas or {}, ensure_ascii=False)
@@ -111,22 +120,31 @@ class Planner:
             f"{last_step_section}"
         )
         user = (
-            f"Current date: {date.today().isoformat()}\n\n"
             f"{core_context}"
             f"{guidelines_section}"
-            f"Allowed tools (IDs):\n{allowed_tools if allowed_tools else 'ANY'}\n\n"
-            "Tool input schemas (mapping from tool_id to JSON Schema):\n"
-            f"{schemas_json}"
         )
 
         log.info(f"Calling LLM now: Planning next step: remaining_steps={remaining_steps}, executed_steps={len(executed_steps or [])}")
         log.debug("plan_next_step user prompt:\n%s", core_context)
 
         model = self._model_registry.resolve(planner_model)
+        # Everything the app asserts — capabilities and the clock — is system context;
+        # the user turn holds only the request and what the tools returned for it.
+        # The tool list and schemas are identical for every request and every step
+        # (Agent caches tool discovery process-wide), so they stay inside the cached
+        # prompt prefix. The timestamp goes LAST, after them: it is the one part of
+        # the system message that varies, so anything before it stays cacheable.
+        system = (
+            f"{model.prompt}\n\n"
+            f"Allowed tools (IDs):\n{allowed_tools if allowed_tools else 'ANY'}\n\n"
+            "Tool input schemas (mapping from tool_id to JSON Schema):\n"
+            f"{schemas_json}\n\n"
+            f"{_now_line(now)}"
+        )
         schema = self._STEP_ONLY_SCHEMA if model.summarizer_prompt else self._STEP_AND_SUMMARY_SCHEMA
         resp_text = await model.generate(
             input=[
-                {"role": "system", "content": model.prompt},
+                {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
             schema=schema,
@@ -154,6 +172,7 @@ class Planner:
         known_drive_items: list | None = None,
         user_guidelines: str | None = None,
         planner_model: str | None = None,
+        now: datetime | None = None,
     ) -> FullTaskSummary:
         """Produce the final FullTaskSummary.
 
@@ -171,8 +190,8 @@ class Planner:
         items_str = json.dumps(known_drive_items, ensure_ascii=False) if known_drive_items else "[]"
         steps_str = json.dumps(executed_steps or [], ensure_ascii=False)
         guidelines_section = f"User guidelines:\n{user_guidelines}\n\n" if user_guidelines else ""
+        system = f"{model.summarizer_prompt}\n\n{_now_line(now)}"
         user = (
-            f"Current date: {date.today().isoformat()}\n\n"
             f"User request:\n{text}\n\n"
             f"Known Drive items:\n{items_str}\n\n"
             f"{guidelines_section}"
@@ -186,7 +205,7 @@ class Planner:
         t0 = time.perf_counter()
         resp_text = await model.generate(
             input=[
-                {"role": "system", "content": model.summarizer_prompt},
+                {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
             schema=self._SUMMARY_SCHEMA,

@@ -1,7 +1,9 @@
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import ValidationError
@@ -106,7 +108,80 @@ class TestPlanNextStepModelResolution:
         call_args = complete_mocks["gpt-5.4-nano-2025-08-07"].call_args
         messages = call_args.kwargs["input"]
         system_msg = next(m for m in messages if m["role"] == "system")
-        assert system_msg["content"] == "PROMPT:p_54_nano.txt", (
-            f"Expected system prompt 'PROMPT:p_54_nano.txt' (from the requested model's prompt file), "
-            f"got {system_msg['content']!r}"
+        # The system message is the resolved model's prompt followed by the static
+        # tool list and schemas, so assert on the prefix.
+        assert system_msg["content"].startswith("PROMPT:p_54_nano.txt"), (
+            f"Expected system prompt to start with 'PROMPT:p_54_nano.txt' (from the requested "
+            f"model's prompt file), got {system_msg['content']!r}"
+        )
+
+
+class TestPlanNextStepPromptLayout:
+    """The static half of the prompt must sit in the system message, the per-request half in the user message."""
+
+    @staticmethod
+    def _messages(build_registry, **kwargs) -> tuple[str, str]:
+        registry, complete_mocks = build_registry(
+            default_model="gpt-5-nano",
+            models={
+                "gpt-5-nano": {"full_name": "gpt-5-nano-2025-08-07", "vendor": "open_ai", "prompt_file": "p_nano.txt"},
+            },
+        )
+        planner = Planner(model_registry=registry)
+        asyncio.run(planner.plan_next_step(**kwargs))
+        messages = complete_mocks["gpt-5-nano-2025-08-07"].call_args.kwargs["input"]
+        system = next(m for m in messages if m["role"] == "system")["content"]
+        user = next(m for m in messages if m["role"] == "user")["content"]
+        return system, user
+
+    def test_tools_and_schemas_go_in_the_system_message(self, build_registry):
+        # They are identical for every request and every step, so keeping them in the
+        # system message keeps them inside the cached prompt prefix — and out of the
+        # same turn as user-controlled text.
+        system, user = self._messages(
+            build_registry,
+            text="hi",
+            allowed_tools=["gw.list_drive_items"],
+            tool_schemas={"gw.list_drive_items": {"type": "object"}},
+        )
+        assert "gw.list_drive_items" in system, (
+            f"Expected the allowed tool id and its schema in the system message, got {system!r}"
+        )
+        assert "gw.list_drive_items" not in user, (
+            f"Tool ids/schemas must not be re-sent in the user message, got {user!r}"
+        )
+
+    def test_system_message_carries_the_caller_local_time(self, build_registry):
+        # The clock is app-asserted context, not something the caller typed, so it goes in
+        # the system message — out of reach of the user text. It must show the caller's own
+        # offset, not the server's UTC clock, since the planner resolves "yesterday" against it.
+        now = datetime(2026, 8, 3, 0, 30, tzinfo=ZoneInfo("America/New_York"))
+        system, user = self._messages(build_registry, text="hi", allowed_tools=None, now=now)
+        assert "2026-08-03T00:30-04:00" in system, (
+            f"Expected the caller-local timestamp with offset in the system message, got {system!r}"
+        )
+        assert "2026-08-03" not in user, (
+            f"The timestamp must not also appear in the user message, got {user!r}"
+        )
+
+    def test_timestamp_is_the_last_thing_in_the_system_message(self, build_registry):
+        # It is the only part of the system message that varies, so everything cacheable
+        # (prompt, tool list, schemas) must precede it.
+        now = datetime(2026, 8, 3, 0, 30, tzinfo=ZoneInfo("America/New_York"))
+        system, _user = self._messages(
+            build_registry,
+            text="hi",
+            allowed_tools=["gw.list_drive_items"],
+            tool_schemas={"gw.list_drive_items": {"type": "object"}},
+            now=now,
+        )
+        assert system.index("gw.list_drive_items") < system.index("2026-08-03"), (
+            f"Tool ids/schemas must precede the timestamp so they stay in the cached prefix, got {system!r}"
+        )
+
+    def test_missing_now_falls_back_to_utc(self, build_registry):
+        # Callers that omit `now` (e.g. direct planner use) still get a usable timestamp.
+        system, _user = self._messages(build_registry, text="hi", allowed_tools=None)
+        assert datetime.now(timezone.utc).strftime("%Y-%m-%d") in system, (
+            f"Expected a UTC date in the system message when `now` is omitted, got {system!r}"
         )

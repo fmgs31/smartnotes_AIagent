@@ -3,6 +3,7 @@ import logging
 import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from app.agent_memory import AgentMemory
@@ -11,7 +12,7 @@ from app.mcp_client import MCPClient
 from app.schemas import ErrorEvent, EventType, ExecutedToolStep, NextStepPlan, FullTaskSummary
 from app.server_registry import ServerConfig, ServerRegistry
 from app.tool_refiners import DEFAULT_REFINERS, ToolResultRefiner
-from app.utils import stable_json
+from app.utils import now_in_timezone, stable_json
 
 log = logging.getLogger("agent")
 
@@ -25,6 +26,9 @@ class _RequestContext:
     known_drive_items: list = field(default_factory=list)
     user_guidelines: str | None = None
     planner_model: str | None = None
+    # Resolved once per request: every planning step and the summarizer see the same
+    # "now", so the timestamp does not shift the prompt prefix between steps.
+    now: datetime | None = None
     clients: dict[str, MCPClient] = field(default_factory=dict)
     allowed_tools: list[str] = field(default_factory=list)
     tool_schemas: dict[str, Any] = field(default_factory=dict)
@@ -69,6 +73,7 @@ class Agent:
         known_drive_items: list | None = None,
         user_guidelines: str | None = None,
         planner_model: str | None = None,
+        timezone: str | None = None,
         requested_tool_sets: list[str] | None = None,
     ):
         """Set up MCP clients and yield a ready _RequestContext."""
@@ -86,6 +91,7 @@ class Agent:
                 known_drive_items=context_items,
                 user_guidelines=user_guidelines,
                 planner_model=planner_model,
+                now=now_in_timezone(timezone),
             )
             if not self._tool_id_to_tool:
                 for server in self.registry.all():
@@ -134,6 +140,7 @@ class Agent:
             known_drive_items=request_ctxt.known_drive_items,
             user_guidelines=request_ctxt.user_guidelines,
             planner_model=request_ctxt.planner_model,
+            now=request_ctxt.now,
         )
 
         # Save before yielding the result: if the client disconnects right after the
@@ -153,6 +160,7 @@ class Agent:
         known_drive_items: list | None = None,
         user_guidelines: str | None = None,
         planner_model: str | None = None,
+        timezone: str | None = None,
     ) -> tuple:
         """Run the pipeline and return (FullTaskSummary, list[ExecutedToolStep])."""
         async with self._open_context(
@@ -162,6 +170,7 @@ class Agent:
             known_drive_items=known_drive_items,
             user_guidelines=user_guidelines,
             planner_model=planner_model,
+            timezone=timezone,
         ) as request_ctxt:
             steps: list[ExecutedToolStep] = []
             result = None
@@ -182,6 +191,7 @@ class Agent:
         known_drive_items: list | None = None,
         user_guidelines: str | None = None,
         planner_model: str | None = None,
+        timezone: str | None = None,
     ):
         """Async generator yielding typed SSE event dicts for each step and the final result."""
         async with self._open_context(
@@ -191,6 +201,7 @@ class Agent:
             known_drive_items=known_drive_items,
             user_guidelines=user_guidelines,
             planner_model=planner_model,
+            timezone=timezone,
         ) as request_ctxt:
             try:
                 async for obj in self._handle(request_ctxt):
@@ -238,6 +249,7 @@ class Agent:
             tool_schemas=request_ctxt.tool_schemas,
             executed_steps=planning_context,
             remaining_steps=self.max_plan_steps - step_idx + 1,
+            now=request_ctxt.now,
         )
 
         if next_step.done:
