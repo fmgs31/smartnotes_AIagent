@@ -48,4 +48,5 @@ failed_logs/*
 
 # ---- servers ----
 servers/google_workspace_mcp
-deploy copy.sh
+servers/run_google_workspace_mpc_server.bat
+
