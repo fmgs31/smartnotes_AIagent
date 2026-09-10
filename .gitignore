@@ -26,6 +26,13 @@ venv/
 # ---- Secrets -----------------------------------------------------------
 client_secret.json
 allowed_users.json
+gcp_token.json
+.env.*
+*_secret.json
+*credentials*.json
+*.pem
+*.key
+deploy copy.sh
 
 # ---- Logs --------------------------------------------------------------
 mcp_server_debug.log
@@ -41,3 +48,4 @@ failed_logs/*
 
 # ---- servers ----
 servers/google_workspace_mcp
+deploy copy.sh

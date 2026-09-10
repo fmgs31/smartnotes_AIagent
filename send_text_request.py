@@ -8,7 +8,7 @@ from token_utils import get_valid_token
 
 load_dotenv()
 
-# RUN_AUDIO_URL = "https://smarnotes-gateway-131932405877.australia-southeast1.run.app/run-audio"
+# RUN_AUDIO_URL = "https://smartnotes-gateway-131932405877.australia-southeast1.run.app/run-audio"
 RUN_URL = "http://localhost:8001/run"
 TOKEN_FILE = Path("gcp_token.json")
 APP_API_KEY = os.environ["APP_API_KEY"]

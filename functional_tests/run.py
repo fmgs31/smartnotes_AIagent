@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SmarNotes functional tests — real LLM, fake MCP stub.
+smartnotes functional tests — real LLM, fake MCP stub.
 
 Usage:
     python -m functional_tests.run
@@ -63,7 +63,7 @@ def _configure_logging(verbose: bool) -> None:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(
-        description="SmarNotes functional tests (real LLM, fake MCP)"
+        description="smartnotes functional tests (real LLM, fake MCP)"
     )
     parser.add_argument(
         "--model", default=DEFAULT_MODEL,

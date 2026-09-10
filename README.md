@@ -1,4 +1,4 @@
-# SmarNotes
+# smartnotes
 
 A FastAPI gateway that turns a spoken or typed instruction into actions on your
 Google Drive, Docs and Sheets.
@@ -430,11 +430,11 @@ The script hard-requires `GCP_PROJECT_ID`, `GCP_REGION`,
 What it does:
 
 1. Enables the required GCP APIs and ensures the Artifact Registry repo exists.
-2. Builds and deploys `smarnotes-mcp` **in two phases** — the server needs
+2. Builds and deploys `smartnotes-mcp` **in two phases** — the server needs
    `WORKSPACE_MCP_BASE_URI` set to its own Cloud Run URL for the OAuth 2.1
    handshake to work behind the HTTPS proxy, and that URL does not exist until
    after the first deploy.
-3. Builds and deploys `smarnotes-gateway`, pointing `GOOGLE_WORKSPACE_URL` at
+3. Builds and deploys `smartnotes-gateway`, pointing `GOOGLE_WORKSPACE_URL` at
    the MCP service and enabling Firestore.
 
 Both services are deployed `--allow-unauthenticated`: Cloud Run IAM auth would

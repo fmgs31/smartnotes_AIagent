@@ -23,8 +23,8 @@ set -euo pipefail
 PROJECT_ID="$GCP_PROJECT_ID"
 REGION="$GCP_REGION"
 
-MCP_SERVICE="smarnotes-mcp"
-GATEWAY_SERVICE="smarnotes-gateway"
+MCP_SERVICE="smartnotes-mcp"
+GATEWAY_SERVICE="smartnotes-gateway"
 
 # Comma-separated list of allowed Google account emails.
 # Update this and re-run only the gateway deploy section to add/remove users.
