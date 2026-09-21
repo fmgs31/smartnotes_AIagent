@@ -693,3 +693,114 @@ class TestExtractToolsWithSchema:
         assert result["t"] == {"type": "object"}, (
             f"Expected snake_case 'input_schema' to be picked up. Got result['t']={result.get('t')!r}"
         )
+
+
+class TestExtractReadOnlyFlags:
+    """Agent._extract_read_only_flags: reads the server's readOnlyHint annotation, failing closed."""
+
+    def test_annotation_object_true(self):
+        tool = SimpleNamespace(name="search", annotations=SimpleNamespace(readOnlyHint=True))
+        result = Agent._extract_read_only_flags([tool])
+        assert result == {"search": True}, f"readOnlyHint=True should map to True, got {result!r}"
+
+    def test_annotation_dict_true(self):
+        result = Agent._extract_read_only_flags(
+            {"tools": [{"name": "search", "annotations": {"readOnlyHint": True}}]}
+        )
+        assert result == {"search": True}, f"Dict-shaped annotations should be read, got {result!r}"
+
+    def test_annotation_false(self):
+        tool = SimpleNamespace(name="create", annotations=SimpleNamespace(readOnlyHint=False))
+        result = Agent._extract_read_only_flags([tool])
+        assert result == {"create": False}, f"readOnlyHint=False should map to False, got {result!r}"
+
+    def test_missing_annotations_fail_closed(self):
+        # No annotations at all → treated as mutating, so the strict session-wide guard applies.
+        tool = SimpleNamespace(name="mystery", inputSchema={})
+        result = Agent._extract_read_only_flags([tool])
+        assert result == {"mystery": False}, f"Missing annotations must fail closed, got {result!r}"
+
+    def test_non_boolean_hint_fails_closed(self):
+        # A truthy non-bool ("yes", 1) must not be mistaken for a read-only declaration.
+        tool = SimpleNamespace(name="odd", annotations={"readOnlyHint": "yes"})
+        result = Agent._extract_read_only_flags([tool])
+        assert result == {"odd": False}, f"Non-boolean hint must fail closed, got {result!r}"
+
+    def test_unnamed_tool_is_skipped(self):
+        tool = SimpleNamespace(name=None, annotations=SimpleNamespace(readOnlyHint=True))
+        result = Agent._extract_read_only_flags([tool])
+        assert result == {}, f"Tool with name=None should be skipped, got {result!r}"
+
+    def test_none_input_returns_empty_dict(self):
+        assert Agent._extract_read_only_flags(None) == {}
+
+
+class TestReadOnlyLoopGuard:
+    """Read-only tools block only on a back-to-back repeat; mutating tools block on any repeat."""
+
+    @patch("app.agent.MCPClient")
+    async def test_read_only_repeat_allowed_after_intervening_step(self, mock_mcp_cls):
+        # read → write → same read again. The re-read returns fresh state, so it must run.
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
+        svc._tool_id_to_tool = {
+            "test-server.search": (servers[0], "search"),
+            "test-server.create": (servers[0], "create"),
+        }
+        svc._tool_id_to_schema = {"test-server.search": {}, "test-server.create": {}}
+        svc._tool_id_to_read_only = {"test-server.search": True, "test-server.create": False}
+        read = NextStepPlan(done=False, next_tool="test-server.search", arguments={"q": "x"})
+        write = NextStepPlan(done=False, next_tool="test-server.create", arguments={"t": "y"})
+        mock_plan.plan_next_step.side_effect = [
+            read, write, read, NextStepPlan(done=True, full_task_summary="ok"),
+        ]
+        mock_mcp_cls.return_value = _mcp_mock()
+
+        _result, steps = await svc.execute(text="read write read", token="tok")
+
+        assert len(steps) == 3, f"Expected 3 executed steps, got {len(steps)}: {steps}"
+        assert "[Agent error]" not in steps[2].mcp_result, (
+            f"Re-read after an intervening write must not be blocked, got {steps[2].mcp_result!r}"
+        )
+
+    @patch("app.agent.MCPClient")
+    async def test_read_only_consecutive_repeat_blocked(self, mock_mcp_cls):
+        # Same read twice in a row → nothing changed in between, so it is a genuine spin.
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
+        svc._tool_id_to_tool = {"test-server.search": (servers[0], "search")}
+        svc._tool_id_to_schema = {"test-server.search": {}}
+        svc._tool_id_to_read_only = {"test-server.search": True}
+        same = NextStepPlan(done=False, next_tool="test-server.search", arguments={"q": "x"})
+        mock_plan.plan_next_step.side_effect = [same, same, NextStepPlan(done=True, full_task_summary="partial")]
+        mock_mcp_cls.return_value = _mcp_mock()
+
+        _result, steps = await svc.execute(text="spin", token="tok")
+
+        assert "[Agent error]" in steps[1].mcp_result, (
+            f"Consecutive identical read must be blocked, got {steps[1].mcp_result!r}"
+        )
+
+    @patch("app.agent.MCPClient")
+    async def test_mutating_repeat_blocked_across_session(self, mock_mcp_cls):
+        # write → read → same write again. The duplicate write must still be blocked.
+        mock_plan = AsyncMock()
+        svc, servers = _make_agent(planner=mock_plan)
+        svc._tool_id_to_tool = {
+            "test-server.search": (servers[0], "search"),
+            "test-server.create": (servers[0], "create"),
+        }
+        svc._tool_id_to_schema = {"test-server.search": {}, "test-server.create": {}}
+        svc._tool_id_to_read_only = {"test-server.search": True, "test-server.create": False}
+        read = NextStepPlan(done=False, next_tool="test-server.search", arguments={"q": "x"})
+        write = NextStepPlan(done=False, next_tool="test-server.create", arguments={"t": "y"})
+        mock_plan.plan_next_step.side_effect = [
+            write, read, write, NextStepPlan(done=True, full_task_summary="partial"),
+        ]
+        mock_mcp_cls.return_value = _mcp_mock()
+
+        _result, steps = await svc.execute(text="write read write", token="tok")
+
+        assert "[Agent error]" in steps[2].mcp_result, (
+            f"Repeated write must be blocked even with an intervening read, got {steps[2].mcp_result!r}"
+        )

@@ -61,6 +61,8 @@ class Agent:
         self._tool_id_to_tool: dict[str, tuple[ServerConfig, str]] = {}
         # Maps fully-qualified tool id -> input schema (as returned by list_tools)
         self._tool_id_to_schema: dict[str, Any] = {}
+        # Maps fully-qualified tool id -> readOnlyHint declared by the server (see _extract_read_only_flags)
+        self._tool_id_to_read_only: dict[str, bool] = {}
         self._discovery_lock = asyncio.Lock()
 
     @asynccontextmanager
@@ -276,12 +278,9 @@ class Agent:
         tool_name = next_step.next_tool
         arguments = next_step.arguments or {}
         rationale = next_step.next_tool_explanation or ""
-        last_signature = None
-        if planning_context:
-            prev = planning_context[-1]
-            last_signature = (prev["next_tool"], stable_json(prev["arguments"]))
         try:
-            server, real_tool_name = self._resolve_tool(tool_name, arguments, seen_signatures, last_signature)
+            server, _ = self._resolve_tool(tool_name)
+            self._guard_against_loops(tool_name, arguments, seen_signatures, planning_context)
         except ValueError as exc:
             log.warning(
                 "Step=%s BLOCKED — %s\n  rationale: %s\n  tool: %s\n  args: %s",
@@ -296,7 +295,7 @@ class Agent:
                 step_idx, tool_name, arguments, rationale,
             )
             try:
-                result = await self._call_tool(step_idx, server, real_tool_name, arguments, request_ctxt)
+                result = await self._call_tool(step_idx, tool_name, arguments, request_ctxt)
             except Exception as exc:
                 log.warning("Step=%s tool call failed: %s", step_idx, exc)
                 result = f"[Tool error] {exc}"
@@ -320,34 +319,47 @@ class Agent:
             mcp_result=result,
         )
 
-    _READ_ONLY_TOOLS = frozenset({
-        "inspect_doc_structure",
-        "get_doc_content",
-        "get_drive_file_content",
-        "list_drive_items",
-        "search_drive_files",
-    })
+    def _resolve_tool(self, tool_name: str) -> tuple[ServerConfig, str]:
+        """Look up the planned tool by id and verify it exists. Returns its server and real name."""
+        selected = self._tool_id_to_tool.get(tool_name)
+        if selected is None:
+            raise ValueError(f"Planned tool '{tool_name}' is not available")
+        return selected
 
-    def _resolve_tool(
+    def _is_read_only(self, tool_name: str) -> bool:
+        """Whether the server declared this tool read-only. Unknown tool ids count as mutating."""
+        return self._tool_id_to_read_only.get(tool_name, False)
+
+    @staticmethod
+    def _signature(tool_name: str, arguments: Any) -> tuple[str, str]:
+        """Identity of a tool call for loop detection: its tool id plus its arguments, key order aside."""
+        return tool_name, stable_json(arguments)
+
+    def _guard_against_loops(
         self,
         tool_name: str,
         arguments: dict,
         seen_signatures: set[tuple[str, str]],
-        last_signature: tuple[str, str] | None = None,
-    ) -> tuple[ServerConfig, str]:
-        """Look up the planned tool by id, verify it exists, and guard against repeated identical calls.
+        planning_context: list[dict[str, Any]],
+    ) -> None:
+        """Raise if this call repeats an earlier one, then record its signature.
 
         Read-only tools are only blocked if the immediately preceding step was identical (consecutive loop).
-        Mutating tools are blocked on any repetition across the entire session.
-        """
-        selected = self._tool_id_to_tool.get(tool_name)
-        if selected is None:
-            raise ValueError(f"Planned tool '{tool_name}' is not available")
-        server, real_tool_name = selected
+        Mutating tools are blocked on any repetition across the entire session. Which is which comes from
+        the server's own `readOnlyHint` annotation, captured at discovery (see _extract_read_only_flags).
 
-        signature = (tool_name, stable_json(arguments))
-        if real_tool_name in self._READ_ONLY_TOOLS:
-            if signature == last_signature:
+        The rules differ because the signature covers arguments only, not world state. For a read-only
+        tool, identical arguments after an intervening write return a different result, so the repeat is
+        real work (re-inspect for fresh indices, read back to verify) and blocking it wastes one of the
+        few `max_plan_steps`. Only a back-to-back repeat means nothing changed in between, which is a
+        genuine spin. For a mutating tool, identical arguments stay a duplicate write however the world
+        moved — inserted twice, created twice — and that damage outlives the request, so any repeat is
+        blocked. A legitimate second write differs in its arguments (a new index) and never matches.
+        """
+        signature = self._signature(tool_name, arguments)
+        if self._is_read_only(tool_name):
+            prev = planning_context[-1] if planning_context else None
+            if prev is not None and signature == self._signature(prev["next_tool"], prev["arguments"]):
                 raise ValueError(
                     f"Planner loop detected: consecutive repeated step '{tool_name}' with identical arguments"
                 )
@@ -358,17 +370,15 @@ class Agent:
                 )
         seen_signatures.add(signature)
 
-        return server, real_tool_name
-
     async def _call_tool(
         self,
         step_idx: int,
-        server: ServerConfig,
-        real_tool_name: str,
+        tool_name: str,
         arguments: dict,
         request_ctxt: _RequestContext,
     ) -> str:
         """Invoke the tool via MCP. Returns the result as a plain string. Raises on failure."""
+        server, real_tool_name = self._resolve_tool(tool_name)
         mcp_client = await self._get_or_open_client(server, request_ctxt)
         try:
             raw = await mcp_client.call_tool(
@@ -438,12 +448,14 @@ class Agent:
 
             tool_id_to_tool: dict[str, tuple[ServerConfig, str]] = {}
             tool_id_to_schema: dict[str, Any] = {}
+            tool_id_to_read_only: dict[str, bool] = {}
 
             for server in self.registry.all():
                 mcp_client = request_ctxt.clients[server.id]
                 raw_tools = await mcp_client.list_tools(token=request_ctxt.token)
 
                 tools_with_schema = self._extract_tools_with_schema(raw_tools)
+                read_only_flags = self._extract_read_only_flags(raw_tools)
                 discovered_tools = list(tools_with_schema.keys())
 
                 configured_allowed = set(server.allowed_tools) if server.allowed_tools is not None else None
@@ -461,12 +473,18 @@ class Agent:
                         raise ValueError(f"Duplicate tool id discovered: '{tool_id}'")
                     tool_id_to_tool[tool_id] = (server, tool_name)
                     tool_id_to_schema[tool_id] = tools_with_schema.get(tool_name)
+                    tool_id_to_read_only[tool_id] = read_only_flags.get(tool_name, False)
 
             if not tool_id_to_tool:
                 raise ValueError("No tools available after token-based discovery and server allowed_tools filtering")
 
             self._tool_id_to_tool = tool_id_to_tool
             self._tool_id_to_schema = tool_id_to_schema
+            self._tool_id_to_read_only = tool_id_to_read_only
+            log.info(
+                "Discovered %d tools (%d read-only)",
+                len(tool_id_to_tool), sum(tool_id_to_read_only.values()),
+            )
 
     @staticmethod
     def _build_tool_id(server_id: str, tool_name: str) -> str:
@@ -474,20 +492,23 @@ class Agent:
         return f"{server_id}.{tool_name}"
 
     @staticmethod
+    def _iter_tool_items(raw_tools: Any) -> list:
+        """Unwrap the raw list_tools payload (dict, list, or object) into a plain list of tool items."""
+        if raw_tools is None:
+            return []
+        if isinstance(raw_tools, dict):
+            return list(raw_tools.get("tools", []))
+        if isinstance(raw_tools, list):
+            return raw_tools
+        return list(getattr(raw_tools, "tools", raw_tools))
+
+    @staticmethod
     def _extract_tools_with_schema(raw_tools: Any) -> dict[str, Any]:
         """
         Normalize the raw tool list returned by list_tools (dict, list, or object)
         into a mapping of tool name -> input schema.
         """
-        if raw_tools is None:
-            return {}
-
-        if isinstance(raw_tools, dict):
-            candidates = raw_tools.get("tools", [])
-        elif isinstance(raw_tools, list):
-            candidates = raw_tools
-        else:
-            candidates = getattr(raw_tools, "tools", raw_tools)
+        candidates = Agent._iter_tool_items(raw_tools)
 
         tools: dict[str, Any] = {}
         for item in candidates:
@@ -506,6 +527,38 @@ class Agent:
                 tools[name] = schema
 
         return tools
+
+    @staticmethod
+    def _extract_read_only_flags(raw_tools: Any) -> dict[str, bool]:
+        """
+        Map tool name -> the `readOnlyHint` MCP annotation declared by the server.
+
+        Fails closed: anything missing, malformed, or not literally `True` counts as mutating.
+        A tool wrongly marked read-only would weaken the duplicate-write guard in
+        _guard_against_loops, while a tool wrongly marked mutating only costs a blocked re-read.
+        """
+        flags: dict[str, bool] = {}
+        for item in Agent._iter_tool_items(raw_tools):
+            if isinstance(item, dict):
+                name = item.get("name")
+                annotations = item.get("annotations")
+            else:
+                name = getattr(item, "name", None)
+                annotations = getattr(item, "annotations", None)
+
+            if not (isinstance(name, str) and name):
+                continue
+
+            if isinstance(annotations, dict):
+                hint = annotations.get("readOnlyHint", annotations.get("read_only_hint"))
+            elif annotations is not None:
+                hint = getattr(annotations, "readOnlyHint", getattr(annotations, "read_only_hint", None))
+            else:
+                hint = None
+
+            flags[name] = hint is True
+
+        return flags
 
     @staticmethod
     def _extract_result_text(result: Any) -> str:
