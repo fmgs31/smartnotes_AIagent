@@ -124,10 +124,13 @@ class Planner:
             f"{guidelines_section}"
         )
 
-        log.info(f"Calling LLM now: Planning next step: remaining_steps={remaining_steps}, executed_steps={len(executed_steps or [])}")
+        model = self._model_registry.resolve(planner_model)
+        log.info(
+            f"Calling LLM now: Planning next step: model={model.full_name} prompt={model.prompt_file} "
+            f"remaining_steps={remaining_steps}, executed_steps={len(executed_steps or [])}"
+        )
         log.debug("plan_next_step user prompt:\n%s", core_context)
 
-        model = self._model_registry.resolve(planner_model)
         # Everything the app asserts — capabilities and the clock — is system context;
         # the user turn holds only the request and what the tools returned for it.
         # The tool list and schemas are identical for every request and every step
@@ -199,8 +202,8 @@ class Planner:
         )
 
         log.info(
-            "Calling LLM now: Summarizing task: executed_steps=%d",
-            len(executed_steps or []),
+            "Calling LLM now: Summarizing task: model=%s executed_steps=%d",
+            model.full_name, len(executed_steps or []),
         )
         t0 = time.perf_counter()
         resp_text = await model.generate(

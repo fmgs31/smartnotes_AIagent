@@ -99,10 +99,14 @@ class ResolvedModel:
         vendor: str,
         generate_fn: Callable,
         summarizer_prompt: str | None = None,
+        prompt_file: str = "",
     ):
         self.full_name = full_name
         self.prompt = prompt
         self.vendor = vendor
+        # Kept for logging only: which prompt version produced a given plan is the
+        # first thing needed when diagnosing a failed request from its logs.
+        self.prompt_file = prompt_file
         self._generate_fn = generate_fn
         # When set, the planner emits a lean next-step output (no summary fields)
         # and a separate LLM call with this prompt produces full_task_summary + items.
@@ -145,6 +149,7 @@ class ModelRegistry:
                 vendor=attrs["vendor"],
                 generate_fn=_CLIENT_FACTORIES[attrs["vendor"]](attrs["full_name"]),
                 summarizer_prompt=_load_summarizer_prompt(attrs),
+                prompt_file=attrs["prompt_file"],
             )
             for name, attrs in models.items()
         }
