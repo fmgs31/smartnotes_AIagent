@@ -5,7 +5,7 @@
     "gpt-5.4-nano": {"full_name": "gpt-5.4-nano-2026-03-17", "vendor":"open_ai", "prompt_file":"planner/v14.txt", "summarizer_prompt_file":"summarizer/v13.txt"},
     "gpt-5-nano": {"full_name": "gpt-5-nano-2025-08-07", "vendor":"open_ai", "prompt_file":"planner/v14.txt", "summarizer_prompt_file":"summarizer/v13.txt"},
     "gpt-5.4-mini": {"full_name": "gpt-5.4-mini-2026-03-17", "vendor":"open_ai", "prompt_file":"planner/v14.txt", "summarizer_prompt_file":"summarizer/v13.txt"},
-    "gpt-5-mini": {"full_name": "gpt-5-mini-2025-08-07", "vendor":"open_ai", "prompt_file":"planner/v14.txt", "summarizer_prompt_file":"summarizer/v13.txt"}
-
+    "gpt-5-mini": {"full_name": "gpt-5-mini-2025-08-07", "vendor":"open_ai", "prompt_file":"planner/v14.txt", "summarizer_prompt_file":"summarizer/v13.txt"},
+    "gpt-5.6-luna": {"full_name": "gpt-5.6-luna", "vendor":"open_ai", "prompt_file":"planner/v14.txt", "summarizer_prompt_file":"summarizer/v13.txt"}
   }
 }
