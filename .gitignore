@@ -51,3 +51,11 @@ diagnostics_data/
 servers/google_workspace_mcp
 servers/run_google_workspace_mpc_server.bat
 
+# ---- MLflow ----
+mlflow.db
+mlartifacts/
+mlruns/
+
+
+# ---- Old evaluation prompt logs ---
+old_primitive_comparisons

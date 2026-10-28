@@ -36,6 +36,7 @@ os.environ.setdefault("ALLOWED_EMAILS",       "test@example.com")
 
 from functional_tests.fake_drive import FakeDrive                   # noqa: E402
 from functional_tests.functional_tests import ALL_TESTS, TestAgent, make_planner  # noqa: E402
+from functional_tests.tracking import Tracker                       # noqa: E402
 
 DEFAULT_MODEL = "gpt-5-nano-2025-08-07"
 # DEFAULT_MODEL = "gpt-5.4-nano-2026-03-17"
@@ -82,6 +83,19 @@ async def main() -> None:
         "--verbose", "-v", action="store_true",
         help="Show agent/planner log output",
     )
+    parser.add_argument(
+        "--mlflow", action="store_true",
+        help="Log results to MLflow (server from MLFLOW_TRACKING_URI)",
+    )
+    parser.add_argument(
+        "--mlflow-batch-name", default="adhoc",
+        help="MLflow 'batch' tag grouping runs to compare, e.g. v9b (only used with --mlflow)",
+    )
+    parser.add_argument("--repeat", type=int, default=1, help="MLflow repeat number")
+    parser.add_argument(
+        "--trace", action="store_true",
+        help="With --mlflow: record every OpenAI call as an MLflow trace",
+    )
     args = parser.parse_args()
 
     _configure_logging(args.verbose)
@@ -119,6 +133,16 @@ async def main() -> None:
     print(f"model: {args.model}  →  {resolved.full_name}")
     print(f"prompt: {prompt_first_line}")
 
+    tracker = Tracker(args.mlflow)
+    tracker.start(args.model, resolved, args.mlflow_batch_name, args.repeat)
+    if args.mlflow and args.trace:
+        # Traces link to the active run, so open the tracker's run in the fluent API.
+        import mlflow
+        from functional_tests.tracking import EXPERIMENT
+        mlflow.set_experiment(EXPERIMENT)
+        mlflow.openai.autolog()
+        mlflow.start_run(run_id=tracker.run_id)
+
     passed = failed = errored = 0
 
     for tc in tests:
@@ -136,6 +160,7 @@ async def main() -> None:
             elapsed = time.perf_counter() - t0
             print(f"  ✓  PASSED  ({elapsed:.1f}s)")
             passed += 1
+            tracker.record(tc.name, "passed", elapsed, drive.get_calls())
         except AssertionError as exc:
             import traceback
             elapsed = time.perf_counter() - t0
@@ -143,6 +168,7 @@ async def main() -> None:
             traceback.print_exc()
             _print_call_log(drive)
             failed += 1
+            tracker.record(tc.name, "failed", elapsed, drive.get_calls(), str(exc), traceback.format_exc())
         except Exception as exc:
             import traceback
             elapsed = time.perf_counter() - t0
@@ -150,10 +176,17 @@ async def main() -> None:
             traceback.print_exc()
             _print_call_log(drive)
             errored += 1
+            tracker.record(tc.name, "error", elapsed, drive.get_calls(),
+                           f"{type(exc).__name__}: {exc}", traceback.format_exc())
 
     total = passed + failed + errored
     print(f"\n{'═' * 64}")
     print(f"Results: {passed} passed  |  {failed} failed  |  {errored} errors  |  {total} total")
+
+    if args.mlflow and args.trace:
+        import mlflow
+        mlflow.end_run()
+    tracker.finish(passed, failed, errored)
 
     sys.exit(0 if (failed + errored) == 0 else 1)
 
