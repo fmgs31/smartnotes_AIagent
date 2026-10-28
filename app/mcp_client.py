@@ -1,4 +1,5 @@
 import asyncio
+import re
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import AsyncIterator
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter
@@ -7,6 +8,31 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
 from app.config import settings
+
+_HTTP_4XX = re.compile(r"HttpError (4\d\d)")
+_RATE_LIMIT = re.compile(r"ratelimitexceeded", re.IGNORECASE)
+
+
+def _is_permanent(exc: BaseException) -> bool:
+    """True for a 4xx from the upstream Google API: the request itself was rejected,
+    so the same arguments get the same answer. Rate limits are the exception, as
+    they clear after a wait: 429, and the 403 rateLimitExceeded /
+    userRateLimitExceeded that Drive uses instead of 429."""
+    text = str(exc)
+    match = _HTTP_4XX.search(text)
+    if match is None or match.group(1) == "429":
+        return False
+    return not _RATE_LIMIT.search(text)
+
+
+def _retry_transient(retry_state) -> bool:
+    """tenacity `retry` predicate. A plain callable over RetryCallState rather than
+    retry_if_exception(...), which only landed in tenacity 8.2 while requirements.txt
+    pins tenacity>=8.0.0. The parameter must be named `retry_state`: tenacity 8.0/8.1
+    pass it as a keyword, later versions positionally."""
+    outcome = retry_state.outcome
+    exc = outcome.exception() if outcome is not None and outcome.failed else None
+    return exc is not None and not _is_permanent(exc)
 
 
 class MCPClient:
@@ -20,12 +46,16 @@ class MCPClient:
     def _retry_decorator(self):
         # Retry config reflects Cloud Run platform characteristics (cold-start windows),
         # not anything specific to individual servers — so it lives in global settings.
+        # The predicate keeps that backoff for transient failures only: a 4xx from the
+        # upstream Google API can never succeed on a second attempt with the same
+        # arguments, and retrying it cost ~19s per Docs append.
         return retry(
             stop=stop_after_attempt(1 + settings.mcp_max_retries),
             wait=wait_exponential_jitter(
                 initial=settings.mcp_retry_initial_wait_s,
                 max=settings.mcp_retry_max_wait_s,
             ),
+            retry=_retry_transient,
             reraise=True,
         )
 
@@ -89,7 +119,11 @@ class MCPClient:
     async def call_tool(self, *, token: str, tool_name: str, arguments: dict):
         client = self._require_client(token)
 
-        @self._retry_decorator() # won't retry on tool error because those are wrapped as string in the server
+        # google_workspace_mcp raises on API errors rather than returning them as a
+        # string result, so a Docs 400 arrives here as a ToolError carrying the
+        # stringified HttpError — which _retry_transient reads to stop the backoff.
+        # If the server ever carries a structured error code, match on that instead.
+        @self._retry_decorator()
         async def _do_call():
             return await asyncio.wait_for(
                 client.call_tool(name=tool_name, arguments=arguments),

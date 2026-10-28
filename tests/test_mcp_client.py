@@ -332,3 +332,95 @@ class TestCallTool:
             f"Expected no retry for isError=True result (it's a 200 OK response), "
             f"got {instance.call_tool.call_count} attempts"
         )
+
+
+# google_workspace_mcp raises on API errors, so an upstream HttpError reaches the client
+# as an exception carrying the stringified error rather than as a string result.
+DOCS_400 = (
+    "Error in on_call_tool middleware: <HttpError 400 when requesting "
+    'https://docs.googleapis.com/v1/documents/abc:batchUpdate returned "Invalid '
+    "requests[0].insertText: Index 14272 must be less than the end index of the "
+    'referenced segment, 14272.">'
+)
+
+
+class TestRetryClassification:
+    """Only failures that can succeed on a second attempt are retried."""
+
+    @patch("app.mcp_client.Client")
+    async def test_permanent_4xx_is_not_retried(self, mock_cls):
+        # A 4xx from the upstream Google API is deterministic: the same arguments always
+        # produce the same rejection, so backoff only delays the refiner that repairs it.
+        instance = _mock_fastmcp_client()
+        instance.call_tool = AsyncMock(side_effect=RuntimeError(DOCS_400))
+        mock_cls.return_value = instance
+        client = MCPClient("http://test/mcp/")
+
+        async with client.session(token="tok"):
+            with pytest.raises(RuntimeError, match="must be less than the end index"):
+                await client.call_tool(
+                    token="tok", tool_name="modify_doc_text", arguments={"start_index": 14272}
+                )
+
+        assert instance.call_tool.call_count == 1, (
+            f"Expected a deterministic 400 to fail on the first attempt, got "
+            f"{instance.call_tool.call_count} attempts"
+        )
+
+    @patch("app.mcp_client.Client")
+    async def test_400_mentioning_429_is_not_retried(self, mock_cls):
+        # Only the status code counts as a rate limit, not any "429" in the message.
+        instance = _mock_fastmcp_client()
+        instance.call_tool = AsyncMock(
+            side_effect=RuntimeError("<HttpError 400 when requesting ... returned Index 14290 is invalid>")
+        )
+        mock_cls.return_value = instance
+        client = MCPClient("http://test/mcp/")
+
+        async with client.session(token="tok"):
+            with pytest.raises(RuntimeError):
+                await client.call_tool(token="tok", tool_name="modify_doc_text", arguments={})
+
+        assert instance.call_tool.call_count == 1, (
+            f"Expected a 400 whose message contains '429' to fail on the first attempt, got "
+            f"{instance.call_tool.call_count} attempts"
+        )
+
+    @pytest.mark.parametrize(
+        "label,message",
+        [
+            ("rate limit", "<HttpError 429 when requesting ... returned rateLimitExceeded>"),
+            ("backend error", "<HttpError 503 when requesting ... returned backendError>"),
+            # Drive signals per-user quota with 403, not 429
+            ("drive 403 rate limit", "<HttpError 403 when requesting ... returned userRateLimitExceeded>"),
+        ],
+    )
+    @patch("app.mcp_client.Client")
+    async def test_retryable_status_codes_still_retry(self, mock_cls, label, message):
+        instance = _mock_fastmcp_client()
+        instance.call_tool = AsyncMock(side_effect=RuntimeError(message))
+        mock_cls.return_value = instance
+        client = MCPClient("http://test/mcp/")
+
+        async with client.session(token="tok"):
+            with pytest.raises(RuntimeError):
+                await client.call_tool(token="tok", tool_name="search", arguments={})
+
+        # mcp_max_retries=2 → 3 total attempts
+        assert instance.call_tool.call_count == 3, (
+            f"Expected a {label} to keep its 3 attempts, got {instance.call_tool.call_count}"
+        )
+
+    @patch("app.mcp_client.Client")
+    async def test_permanent_4xx_recovers_via_retry_when_transient_first(self, mock_cls):
+        # A transient failure followed by success must still recover — the predicate
+        # narrows what is retried, it does not disable retrying.
+        instance = _mock_fastmcp_client()
+        instance.call_tool = AsyncMock(side_effect=[TimeoutError("cold start"), "ok"])
+        mock_cls.return_value = instance
+        client = MCPClient("http://test/mcp/")
+
+        async with client.session(token="tok"):
+            result = await client.call_tool(token="tok", tool_name="search", arguments={})
+
+        assert result == "ok", f"Expected 'ok' after a transient failure, got {result!r}"
