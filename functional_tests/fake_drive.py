@@ -200,9 +200,21 @@ class FakeDrive:
         self.items[item_id] = item
         return item
 
-    def create_doc(self, name: str, parent_id: str, content: str = "") -> dict:
+    def create_doc(
+        self,
+        name: str,
+        parent_id: str,
+        content: str = "",
+        created: str | None = None,
+        modified: str | None = None,
+    ) -> dict:
         item_id = self._next_id(name)
         item = {"id": item_id, "name": name, "mimeType": MIME_DOC, "parent_id": parent_id}
+        # Optional RFC 3339 timestamps (e.g. "2026-10-12T13:54:32.674Z"); shown in
+        # list/search output and used by order_by, like the real Drive API.
+        if created:
+            item["createdTime"] = created
+            item["modifiedTime"] = modified or created
         self.items[item_id] = item
         self.contents[item_id] = content
         return item
@@ -238,7 +250,31 @@ class FakeDrive:
 # ─── output formatter ─────────────────────────────────────────────────────────
 
 def _fmt(item: dict) -> str:
-    return f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]})'
+    times = ""
+    if "createdTime" in item:
+        times = f', Created: {item["createdTime"]}, Modified: {item["modifiedTime"]}'
+    return f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]}{times})'
+
+
+_ORDER_FIELDS = {"createdTime", "modifiedTime", "name"}
+
+
+def _sort_items(items: list[dict], order_by: str | None) -> list[dict]:
+    """
+    Mirror Drive's orderBy ('createdTime desc', 'modifiedTime desc,name', ...).
+    No order_by → modifiedTime desc, the order prod list/search results came
+    back in. Items without timestamps (the disk template) sort last, in their
+    original order, so tests that don't set timestamps are unaffected.
+    """
+    keys = [k.strip().split() for k in (order_by or "modifiedTime desc").split(",") if k.strip()]
+    result = list(items)
+    for parts in reversed(keys):  # stable sorts: last key first
+        field = parts[0]
+        if field not in _ORDER_FIELDS:
+            continue
+        desc = len(parts) > 1 and parts[1].lower() == "desc"
+        result.sort(key=lambda i: i.get(field, ""), reverse=desc)
+    return result
 
 
 # ─── range parser ─────────────────────────────────────────────────────────────
@@ -354,6 +390,9 @@ class FakeMCPClient:
             result = f"[Fake server] Tool '{tool_name}' is not implemented in the fake MCP."
         else:
             result = await handler(**arguments)
+        # Keep the result next to the call so tests can inspect failed attempts
+        # that a refiner later repaired (they never reach the planner's steps).
+        self._drive._call_log[-1]["result"] = result
         print(f"  [{step}] → {tool_name}  {arguments}", flush=True)
         print(f"      ↳ {result}", flush=True)
         return result
@@ -373,6 +412,7 @@ class FakeMCPClient:
         query: str,
         page_size: int = 10,
         file_type: str | None = None,
+        order_by: str | None = None,
         **_,
     ) -> str:
         # Reject queries using invalid field names (e.g. mime_type instead of mimeType)
@@ -408,7 +448,7 @@ class FakeMCPClient:
                 if full_re.group(1).lower() not in text.lower():
                     continue
             results.append(item)
-        results = results[:page_size]
+        results = _sort_items(results, order_by)[:page_size]
         if not results:
             return f"No files found for '{query}'."
         return "\n".join([f"Found {len(results)} files matching '{query}':"] + [_fmt(i) for i in results])
@@ -418,6 +458,7 @@ class FakeMCPClient:
         folder_id: str = "root",
         page_size: int = 100,
         file_type: str | None = None,
+        order_by: str | None = None,
         **_,
     ) -> str:
         d = self._drive
@@ -426,12 +467,12 @@ class FakeMCPClient:
             mime_filter, err = _resolve_file_type(file_type)
             if err:
                 return err
-        results = [
+        results = _sort_items([
             item for item in d.items.values()
             if item.get("parent_id") == folder_id
             and item["id"] != "root"
             and (mime_filter is None or item["mimeType"] == mime_filter)
-        ][:page_size]
+        ], order_by)[:page_size]
         if not results:
             return f"No items found in folder '{folder_id}'."
         return "\n".join([f"Found {len(results)} items in folder '{folder_id}':"] + [_fmt(i) for i in results])
@@ -632,21 +673,23 @@ class FakeMCPClient:
                 "total_length": 0,
                 "tabs": tabs,
             }
-        elif tabs:
-            if not any(t["tab_id"] == tab_id for t in tabs):
-                return f"Error: Tab {tab_id} not found in document."
-            result = {
-                "total_length": max(1, len(content)),
-                "tables": 0,
-                "statistics": {"elements": content.count("\n") + 1},
-                "inspected_tab_id": tab_id,
-            }
         else:
+            if tabs and not any(t["tab_id"] == tab_id for t in tabs):
+                return f"Error: Tab {tab_id} not found in document."
+            # Same keys and order as the real server's basic (detailed=False)
+            # output, as captured in prod logs (2026-10-13).
+            paragraphs = max(1, content.count("\n"))
             result = {
-                "total_length": max(1, len(content)),
+                "total_elements": paragraphs + 1,  # + the leading section break
                 "tables": 0,
-                "statistics": {"elements": content.count("\n") + 1},
+                "paragraphs": paragraphs,
+                "section_breaks": 1,
+                "total_length": max(1, len(content)),
+                "has_headers": False,
+                "has_footers": False,
             }
+            if tabs:
+                result["inspected_tab_id"] = tab_id
         return (
             f"Document structure analysis for {document_id}:\n\n"
             f"{json.dumps(result, indent=2)}\n\n"
