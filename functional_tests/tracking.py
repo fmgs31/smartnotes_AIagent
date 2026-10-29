@@ -85,10 +85,12 @@ def _git(*args: str) -> str:
 class Tracker:
     """No-op unless enabled; every method is safe to call either way."""
 
-    def __init__(self, enabled: bool):
+    def __init__(self, enabled: bool, experiment: str = EXPERIMENT):
         self.enabled = enabled
+        self.experiment = experiment
         self.run_id: str | None = None
         self._rows: list[dict] = []
+        self._test_metrics: list[tuple[str, float]] = []
         self._t0 = 0.0
         if enabled:
             # MLflow prints emoji "View run" lines on set_terminated; don't crash on cp1252 consoles.
@@ -98,24 +100,31 @@ class Tracker:
             from mlflow import MlflowClient
             self._client = MlflowClient()
 
-    def start(self, model_key: str, resolved, mlflow_batch_name: str, repeat: int) -> None:
+    def start(self, model_key: str, resolved, mlflow_batch_name: str, repeat: int,
+              max_plan_steps: int, n_tests: int) -> None:
         if not self.enabled:
             return
-        exp = self._client.get_experiment_by_name(EXPERIMENT)
-        exp_id = exp.experiment_id if exp else self._client.create_experiment(EXPERIMENT)
-        tags = {
-            # Tag key stays "batch" so filters on runs logged before the rename keep working.
-            "batch": mlflow_batch_name,
+        from mlflow.entities import Param
+        exp = self._client.get_experiment_by_name(self.experiment)
+        exp_id = exp.experiment_id if exp else self._client.create_experiment(self.experiment)
+        config = {
             "model_key": model_key,
             "full_name": resolved.full_name,
             "prompt_file": resolved.prompt_file,
             "prompt_sha": hashlib.sha256(resolved.prompt.encode("utf-8")).hexdigest()[:12],
+        }
+        tags = {
+            # Tag key stays "batch" so filters on runs logged before the rename keep working.
+            "batch": mlflow_batch_name,
+            **config,  # also kept as tags so existing tag filters keep working
             "git_commit": _git("rev-parse", "--short", "HEAD"),
             "git_dirty": str(bool(_git("status", "--porcelain", "--untracked-files=no"))),
             "repeat": str(repeat),
         }
         run = self._client.create_run(exp_id, run_name=f"{mlflow_batch_name}/{model_key}/r{repeat}", tags=tags)
         self.run_id = run.info.run_id
+        params = {**config, "max_plan_steps": max_plan_steps, "n_tests": n_tests}
+        self._client.log_batch(self.run_id, params=[Param(k, str(v)) for k, v in params.items()])
         self._client.log_text(self.run_id, resolved.prompt, "prompt.txt")
         if resolved.summarizer_prompt:
             self._client.log_text(self.run_id, resolved.summarizer_prompt, "summarizer_prompt.txt")
@@ -125,8 +134,9 @@ class Tracker:
                error: str = "", tb: str = "") -> None:
         if not self.run_id:
             return
-        self._client.log_metric(self.run_id, f"test.{name}", 1.0 if status == "passed" else 0.0)
-        self._client.log_metric(self.run_id, f"time.{name}", elapsed)
+        # Logged in finish(), after the summary metrics: the UI lists metrics in logging order.
+        self._test_metrics += [(f"test.{name}", 1.0 if status == "passed" else 0.0),
+                               (f"time.{name}", elapsed)]
         self._rows.append({
             "test": name,
             "status": status,
@@ -138,17 +148,45 @@ class Tracker:
         if tb:
             self._client.log_text(self.run_id, tb, f"failures/{name}.txt")
 
+    def _description(self, passed: int, total: int, total_time: float, tool_calls: int,
+                     warnings: int | None, crashed: bool) -> str:
+        """Markdown shown as the run's Description in the MLflow UI."""
+        parts = [f"**{passed}/{total} passed**", f"{total_time:.0f}s", f"{tool_calls} tool calls"]
+        if warnings is not None:
+            parts.append(f"{warnings} loop-retry warnings")
+        lines = [" · ".join(parts)]
+        if crashed:
+            lines.append("\n**Run crashed** — see the log artifact.")
+        bad = [r for r in self._rows if r["status"] != "passed"]
+        if bad:
+            lines += ["", "| Test | Status | Error |", "|---|---|---|"]
+            for r in bad:
+                err = (r["error"].strip().splitlines() or [""])[0][:200].replace("|", "\\|")
+                lines.append(f"| {r['test']} | {r['status']} | {err} |")
+        return "\n".join(lines)
+
     def finish(self, passed: int, failed: int, errored: int, log_file: Path | None = None,
-               crashed: bool = False) -> None:
+               crashed: bool = False, warnings: int | None = None) -> None:
         if not self.run_id:
             return
         total = passed + failed + errored
-        for key, value in {
+        total_time = time.perf_counter() - self._t0
+        tool_calls = sum(r["n_tool_calls"] for r in self._rows)
+        metrics = {
             "passed": passed, "failed": failed, "errored": errored,
             "pass_rate": passed / total if total else 0.0,
-            "total_time_s": time.perf_counter() - self._t0,
-        }.items():
+            "total_time_s": total_time,
+            "total_tool_calls": tool_calls,
+            "avg_tool_calls": tool_calls / len(self._rows) if self._rows else 0.0,
+        }
+        if warnings is not None:
+            metrics["warnings"] = warnings
+        for key, value in [*metrics.items(), *self._test_metrics]:
             self._client.log_metric(self.run_id, key, value)
+        failed_tests = [r["test"] for r in self._rows if r["status"] != "passed"]
+        self._client.set_tag(self.run_id, "failed_tests", ",".join(failed_tests))
+        self._client.set_tag(self.run_id, "mlflow.note.content",
+                             self._description(passed, total, total_time, tool_calls, warnings, crashed))
         if self._rows:
             import pandas as pd
             self._client.log_table(self.run_id, data=pd.DataFrame(self._rows), artifact_file="results.json")

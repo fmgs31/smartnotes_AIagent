@@ -35,16 +35,17 @@ from functional_tests.functional_tests import ALL_TESTS, TestAgent, make_planner
 from functional_tests.tracking import Tracker  # noqa: E402
 
 # ── Configuration ────────────────────────────────────────────────────────────
-OUTPUT_LOG_FOLDER = 'v9b'
+MLFLOW_EXPERIMENT = 'v16'
+OUTPUT_LOG_FOLDER = MLFLOW_EXPERIMENT
 RUNS_PER_MODEL = {
-    'gpt-5.4-nano_OR9': 3,
-    'gpt-5.4-nano_CB9': 3,
-    'gpt-5-nano_CB9':   2,
-    'gpt-5-nano_OR9':   2,
+    'gpt-5.4-nano': 2,
+    'gpt-5.6-luna': 2,
 }
 MODELS = list(RUNS_PER_MODEL.keys())
 MAX_CONCURRENT = 2
+MAX_PLAN_STEPS = 10
 USE_MLFLOW = True  # needs MLFLOW_TRACKING_URI pointing at a running `mlflow server`
+
 
 WARNING_MARKER = "WARNING loop retries:"
 
@@ -93,7 +94,8 @@ for _name in ("agent", "planner"):
     _log.propagate = False
     _log.setLevel(logging.INFO)
     if not _log.handlers:
-        _h = logging.StreamHandler()  # uses sys.stderr (dispatcher) at emit time
+        # Captures sys.stderr NOW, so this must run after the dispatcher is installed above.
+        _h = logging.StreamHandler()
         _h.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
         _log.addHandler(_h)
 
@@ -123,7 +125,8 @@ async def _execute_tests(model: str, tracker: Tracker, run_num: int) -> None:
     prompt_first_line = resolved.prompt.splitlines()[0]
     print(f"model: {model}  →  {resolved.full_name}")
     print(f"prompt: {prompt_first_line}")
-    tracker.start(model, resolved, OUTPUT_LOG_FOLDER, run_num)
+    tracker.start(model, resolved, OUTPUT_LOG_FOLDER, run_num,
+                  max_plan_steps=MAX_PLAN_STEPS, n_tests=len(ALL_TESTS))
 
     passed = failed = errored = 0
     for tc in ALL_TESTS:
@@ -132,7 +135,7 @@ async def _execute_tests(model: str, tracker: Tracker, run_num: int) -> None:
         print(f"      {tc.description}")
 
         drive = FakeDrive()
-        agent = TestAgent(fake_drive=drive, planner=planner, max_plan_steps=10, planner_model=model)
+        agent = TestAgent(fake_drive=drive, planner=planner, max_plan_steps=MAX_PLAN_STEPS, planner_model=model)
 
         t0 = time.perf_counter()
         try:
@@ -191,7 +194,7 @@ async def _run_one(
         _console(f'>>> START  {model} run {run_num}/{total_runs}  ->  {rel}')
         t0 = time.perf_counter()
         crashed = False
-        tracker = Tracker(USE_MLFLOW)
+        tracker = Tracker(USE_MLFLOW, MLFLOW_EXPERIMENT)
         with open(log_file, 'w', encoding='utf-8', errors='replace') as f:
             f.write(f'=== {model} run {run_num}/{total_runs} ===\n\n')
             f.flush()
@@ -206,7 +209,7 @@ async def _run_one(
         elapsed = time.perf_counter() - t0
         passed, failed, errored, warnings = _count_markers(log_file)
         try:
-            tracker.finish(passed, failed, errored, log_file=log_file, crashed=crashed)
+            tracker.finish(passed, failed, errored, log_file=log_file, crashed=crashed, warnings=warnings)
         except Exception as exc:
             _console(f'!!! MLflow logging failed for {model} run {run_num}: {type(exc).__name__}: {exc}')
         status = 'CRASH' if crashed else ('OK' if (failed + errored) == 0 else 'FAIL')

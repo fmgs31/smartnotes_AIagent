@@ -36,7 +36,7 @@ os.environ.setdefault("ALLOWED_EMAILS",       "test@example.com")
 
 from functional_tests.fake_drive import FakeDrive                   # noqa: E402
 from functional_tests.functional_tests import ALL_TESTS, TestAgent, make_planner  # noqa: E402
-from functional_tests.tracking import Tracker                       # noqa: E402
+from functional_tests.tracking import EXPERIMENT, Tracker           # noqa: E402
 
 DEFAULT_MODEL = "gpt-5-nano-2025-08-07"
 # DEFAULT_MODEL = "gpt-5.4-nano-2026-03-17"
@@ -91,6 +91,10 @@ async def main() -> None:
         "--mlflow-batch-name", default="adhoc",
         help="MLflow 'batch' tag grouping runs to compare, e.g. v9b (only used with --mlflow)",
     )
+    parser.add_argument(
+        "--mlflow-experiment", default=EXPERIMENT,
+        help=f"MLflow experiment name (default: {EXPERIMENT})",
+    )
     parser.add_argument("--repeat", type=int, default=1, help="MLflow repeat number")
     parser.add_argument(
         "--trace", action="store_true",
@@ -133,13 +137,13 @@ async def main() -> None:
     print(f"model: {args.model}  →  {resolved.full_name}")
     print(f"prompt: {prompt_first_line}")
 
-    tracker = Tracker(args.mlflow)
-    tracker.start(args.model, resolved, args.mlflow_batch_name, args.repeat)
+    tracker = Tracker(args.mlflow, args.mlflow_experiment)
+    tracker.start(args.model, resolved, args.mlflow_batch_name, args.repeat,
+                  max_plan_steps=10, n_tests=len(tests))
     if args.mlflow and args.trace:
         # Traces link to the active run, so open the tracker's run in the fluent API.
         import mlflow
-        from functional_tests.tracking import EXPERIMENT
-        mlflow.set_experiment(EXPERIMENT)
+        mlflow.set_experiment(args.mlflow_experiment)
         mlflow.openai.autolog()
         mlflow.start_run(run_id=tracker.run_id)
 

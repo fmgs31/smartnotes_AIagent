@@ -39,6 +39,7 @@ OUTPUT_LOG_FOLDER = 'v9b'                 # log folder + MLflow `batch` tag
 RUNS_PER_MODEL = {'gpt-5.4-nano_OR9': 3, ...}
 MAX_CONCURRENT = 2                        # concurrent runner only
 USE_MLFLOW = True
+MLFLOW_EXPERIMENT = 'planner-behavioural' # MLflow experiment the runs go to
 ```
 
 then:
@@ -69,7 +70,8 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe' AND CommandLine LIKE '%
 
 A non-local `MLFLOW_TRACKING_URI` is used as-is, never auto-started.
 
-UI: <http://127.0.0.1:5000>, experiment `planner-behavioural`.
+UI: <http://127.0.0.1:5000>, experiment `planner-behavioural` by default
+(`MLFLOW_EXPERIMENT` in the runners, `--mlflow-experiment` for `run.py`).
 A server is used rather than the SQLite file directly: the concurrent
 runner has parallel writers.
 
@@ -89,11 +91,18 @@ python -m functional_tests.run --test append_terapia --mlflow --mlflow-batch-nam
 One MLflow run = one model × one repeat.
 
 - **Tags**: `batch` (the `--mlflow-batch-name` / `OUTPUT_LOG_FOLDER` label), `model_key`, `full_name`, `prompt_file`, `prompt_sha`,
-  `git_commit`, `git_dirty`, `repeat`.
+  `git_commit`, `git_dirty`, `repeat`, and `failed_tests` (comma-separated
+  names of failed/errored tests; filter with `tags.failed_tests LIKE '%name%'`).
   `prompt_sha` is a hash of the prompt *text*, so a prompt edited in place
   counts as a new version even if the file name stays the same.
-- **Metrics**: `pass_rate`, `passed`, `failed`, `errored`, `total_time_s`, and
-  per test `test.<name>` (1 = pass, 0 = fail/error) and `time.<name>`.
+- **Params**: `model_key`, `full_name`, `prompt_file`, `prompt_sha`,
+  `max_plan_steps`, `n_tests` — usable in Compare / parallel-coordinates views.
+- **Description**: markdown summary (pass count, time, tool calls, warnings)
+  plus a table of failed tests with the first line of each error.
+- **Metrics**: `pass_rate`, `passed`, `failed`, `errored`, `total_time_s`,
+  `total_tool_calls`, `avg_tool_calls`, `warnings` (loop-retry warnings;
+  concurrent runner only), and per test `test.<name>` (1 = pass, 0 = fail/error)
+  and `time.<name>`.
 - **Artifacts**: `prompt.txt` (and `summarizer_prompt.txt` if any),
   `failures/<test>.txt` tracebacks, `results.json` table (one row per test:
   status, elapsed, error, tool calls), and the run's `.log` file
