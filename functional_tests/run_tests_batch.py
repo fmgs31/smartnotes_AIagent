@@ -24,7 +24,7 @@ def run_one(model: str, run_num: int, total_runs: int, log_dir: Path, base_dir: 
     cmd = [sys.executable, '-u', '-m', 'functional_tests.run', '--model', model]
     if USE_MLFLOW:
         cmd += ['--mlflow', '--mlflow-experiment', MLFLOW_EXPERIMENT,
-                '--mlflow-batch-name', OUTPUT_LOG_FOLDER, '--repeat', str(run_num)]
+                '--mlflow-batch-name', OUTPUT_LOG_FOLDER, '--repeat-idx', str(run_num)]
         if USE_TRACE:
             cmd.append('--trace')
 

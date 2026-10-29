@@ -95,7 +95,12 @@ async def main() -> None:
         "--mlflow-experiment", default=EXPERIMENT,
         help=f"MLflow experiment name (default: {EXPERIMENT})",
     )
-    parser.add_argument("--repeat", type=int, default=1, help="MLflow repeat number")
+    parser.add_argument(
+        "--repeat-idx", type=int, default=1,
+        help="Label only: index of this run among repeats of the same model/batch. "
+             "Sets the MLflow 'repeat' tag and the run-name suffix r<N>. "
+             "Does NOT run the suite multiple times (only used with --mlflow)",
+    )
     parser.add_argument(
         "--trace", action="store_true",
         help="With --mlflow: record one MLflow trace per test (OpenAI calls nested, "
@@ -139,7 +144,7 @@ async def main() -> None:
     print(f"prompt: {prompt_first_line}")
 
     tracker = Tracker(args.mlflow, args.mlflow_experiment, trace=args.trace)
-    tracker.start(args.model, resolved, args.mlflow_batch_name, args.repeat,
+    tracker.start(args.model, resolved, args.mlflow_batch_name, args.repeat_idx,
                   max_plan_steps=10, n_tests=len(tests))
 
     passed = failed = errored = 0

@@ -82,7 +82,7 @@ not via `conda run`: `conda run` waits for the background server and never retur
 `run.py` only logs when asked:
 
 ```
-python -m functional_tests.run --model gpt-5.4-nano --mlflow --mlflow-batch-name v10 --repeat 1
+python -m functional_tests.run --model gpt-5.4-nano --mlflow --mlflow-batch-name v10 --repeat-idx 1
 python -m functional_tests.run --test append_terapia --mlflow --mlflow-batch-name debug --trace
 ```
 
