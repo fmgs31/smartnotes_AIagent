@@ -107,8 +107,10 @@ One MLflow run = one model × one repeat.
   `failures/<test>.txt` tracebacks, `results.json` table (one row per test:
   status, elapsed, error, tool calls), and the run's `.log` file
   (concurrent runner only).
-- **Traces** (`--trace`, `run.py` only): every OpenAI call with messages,
-  tokens and latency — open the exact planner output behind a failure. Not
+- **Traces** (`--trace`, `run.py` and the batch runner's `USE_TRACE`): one
+  trace per test with its OpenAI calls nested (messages, tokens, latency) and
+  a `passed` feedback, so tests show as rows in the run's evaluation panel —
+  open the exact planner output behind a failure. Not
   available in the concurrent runner: runs share one process, so calls can't
   be attributed to a run.
 

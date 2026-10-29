@@ -3,9 +3,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-MODELS = ['gpt-5.4-nano_CB7', 'gpt-5.4-nano_OR7', 'gpt-5-nano_CB7', 'gpt-5-nano_OR7']
 OUTPUT_LOG_FOLDER = 'v7'
 USE_MLFLOW = True  # needs MLFLOW_TRACKING_URI pointing at a running `mlflow server`
+USE_TRACE = True  # with USE_MLFLOW: one trace per test, shown in the run's evaluation panel
 MLFLOW_EXPERIMENT = 'planner-behavioural'
 RUNS_PER_MODEL = {
     'gpt-5.4-nano_OR7':3,
@@ -13,6 +13,7 @@ RUNS_PER_MODEL = {
     'gpt-5-nano_CB7':2,
     'gpt-5-nano_OR7':2
 }
+MODELS = list(RUNS_PER_MODEL.keys())
 
 
 def run_one(model: str, run_num: int, total_runs: int, log_dir: Path, base_dir: Path) -> int:
@@ -24,6 +25,8 @@ def run_one(model: str, run_num: int, total_runs: int, log_dir: Path, base_dir: 
     if USE_MLFLOW:
         cmd += ['--mlflow', '--mlflow-experiment', MLFLOW_EXPERIMENT,
                 '--mlflow-batch-name', OUTPUT_LOG_FOLDER, '--repeat', str(run_num)]
+        if USE_TRACE:
+            cmd.append('--trace')
 
     # Force the child's stdout/stderr to UTF-8 so its print() of e.g. '\u2192' doesn't crash
     # under Windows' default cp1252 console encoding when piped.

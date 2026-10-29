@@ -19,6 +19,8 @@ import logging
 import os
 import sys
 import time
+import traceback
+from contextlib import nullcontext
 from pathlib import Path
 
 # ── Make the repo root importable when invoked as a script ───────────────────
@@ -98,7 +100,8 @@ async def main() -> None:
     parser.add_argument("--repeat", type=int, default=1, help="MLflow repeat number")
     parser.add_argument(
         "--trace", action="store_true",
-        help="With --mlflow: record every OpenAI call as an MLflow trace",
+        help="With --mlflow: record one MLflow trace per test (OpenAI calls nested, "
+             "pass/fail as feedback) so tests show in the run's evaluation panel",
     )
     args = parser.parse_args()
 
@@ -140,9 +143,11 @@ async def main() -> None:
     tracker = Tracker(args.mlflow, args.mlflow_experiment)
     tracker.start(args.model, resolved, args.mlflow_batch_name, args.repeat,
                   max_plan_steps=10, n_tests=len(tests))
-    if args.mlflow and args.trace:
+    trace = args.mlflow and args.trace
+    if trace:
         # Traces link to the active run, so open the tracker's run in the fluent API.
         import mlflow
+        from mlflow.entities import AssessmentSource
         mlflow.set_experiment(args.mlflow_experiment)
         mlflow.openai.autolog()
         mlflow.start_run(run_id=tracker.run_id)
@@ -158,37 +163,48 @@ async def main() -> None:
         drive = FakeDrive()
         agent = TestAgent(fake_drive=drive, planner=planner, max_plan_steps=10, planner_model=args.model)
 
+        status, error, tb = "passed", "", ""
         t0 = time.perf_counter()
-        try:
-            await tc.fn(agent, drive)
-            elapsed = time.perf_counter() - t0
+        # One root span per test; autologged OpenAI calls nest under it.
+        with (mlflow.start_span(name=tc.name, span_type="AGENT") if trace else nullcontext()) as span:
+            if span:
+                span.set_inputs({"test": tc.name, "description": tc.description})
+            try:
+                await tc.fn(agent, drive)
+            except AssertionError as exc:
+                status, error, tb = "failed", str(exc), traceback.format_exc()
+            except Exception as exc:
+                status, error, tb = "error", f"{type(exc).__name__}: {exc}", traceback.format_exc()
+            if span:
+                span.set_outputs({"status": status, "error": error,
+                                  "tool_calls": [f"[{c['step']}] {c['tool']} {c['args']}" for c in drive.get_calls()]})
+        elapsed = time.perf_counter() - t0
+
+        if status == "passed":
             print(f"  ✓  PASSED  ({elapsed:.1f}s)")
             passed += 1
-            tracker.record(tc.name, "passed", elapsed, drive.get_calls())
-        except AssertionError as exc:
-            import traceback
-            elapsed = time.perf_counter() - t0
-            print(f"  ✗  FAILED  ({elapsed:.1f}s)")
-            traceback.print_exc()
+        else:
+            if status == "failed":
+                print(f"  ✗  FAILED  ({elapsed:.1f}s)")
+                failed += 1
+            else:
+                print(f"  !  ERROR   ({elapsed:.1f}s)  {error}")
+                errored += 1
+            print(tb, end="", file=sys.stderr)
             _print_call_log(drive)
-            failed += 1
-            tracker.record(tc.name, "failed", elapsed, drive.get_calls(), str(exc), traceback.format_exc())
-        except Exception as exc:
-            import traceback
-            elapsed = time.perf_counter() - t0
-            print(f"  !  ERROR   ({elapsed:.1f}s)  {type(exc).__name__}: {exc}")
-            traceback.print_exc()
-            _print_call_log(drive)
-            errored += 1
-            tracker.record(tc.name, "error", elapsed, drive.get_calls(),
-                           f"{type(exc).__name__}: {exc}", traceback.format_exc())
+        tracker.record(tc.name, status, elapsed, drive.get_calls(), error, tb)
+
+        if span:
+            mlflow.flush_trace_async_logging()  # log_feedback needs the trace already stored
+            mlflow.log_feedback(trace_id=span.trace_id, name="passed", value=status == "passed",
+                                rationale=error or None,
+                                source=AssessmentSource("CODE", "functional_tests"))
 
     total = passed + failed + errored
     print(f"\n{'═' * 64}")
     print(f"Results: {passed} passed  |  {failed} failed  |  {errored} errors  |  {total} total")
 
-    if args.mlflow and args.trace:
-        import mlflow
+    if trace:
         mlflow.end_run()
     tracker.finish(passed, failed, errored)
 
