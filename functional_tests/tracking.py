@@ -5,18 +5,72 @@ One MLflow run = one model × one repeat. Uses MlflowClient with explicit run
 ids (not the fluent active-run API) so concurrent asyncio runs in the same
 thread don't write into each other's run.
 
-Tracking server is taken from MLFLOW_TRACKING_URI, e.g.:
+Tracking server is taken from MLFLOW_TRACKING_URI (default
+http://127.0.0.1:5000). For a local URI with nothing listening, the server is
+started automatically and left running so the UI stays available:
     mlflow server --backend-store-uri sqlite:///mlflow.db --port 5000
-    set MLFLOW_TRACKING_URI=http://localhost:5000
 """
 import hashlib
+import os
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 EXPERIMENT = "planner-behavioural"
+DEFAULT_TRACKING_URI = "http://127.0.0.1:5000"  # not localhost: IPv6-first lookup adds ~2s per connect on Windows
+SERVER_LOG = ROOT / "mlflow_server.log"
+_SERVER_START_TIMEOUT_S = 90  # first start runs DB migrations
+
+
+def _server_up(uri: str) -> bool:
+    try:
+        with urllib.request.urlopen(f"{uri.rstrip('/')}/health", timeout=2) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def ensure_mlflow_server() -> str:
+    """
+    Make sure MLFLOW_TRACKING_URI points at a live server; return the URI.
+    Defaults the URI to 127.0.0.1:5000 and, for a local URI, starts
+    `mlflow server` detached (output in mlflow_server.log) if it isn't up.
+    A remote URI is used as-is.
+    """
+    uri = os.environ.setdefault("MLFLOW_TRACKING_URI", DEFAULT_TRACKING_URI)
+    if _server_up(uri):
+        return uri
+    parsed = urlparse(uri)
+    if parsed.scheme not in ("http", "https") or parsed.hostname not in ("localhost", "127.0.0.1"):
+        return uri
+
+    cmd = [
+        sys.executable, "-m", "mlflow", "server",
+        "--backend-store-uri", "sqlite:///mlflow.db",
+        "--host", parsed.hostname, "--port", str(parsed.port or 5000),
+    ]
+    if os.name == "nt":
+        detach = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+    else:
+        detach = {"start_new_session": True}
+    print(f"MLflow server not running at {uri}; starting it (log: {SERVER_LOG.name})", flush=True)
+    log = open(SERVER_LOG, "a", encoding="utf-8")
+    proc = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                            stdin=subprocess.DEVNULL, **detach)
+    log.close()  # the child keeps its own handle
+
+    deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if _server_up(uri):
+            return uri
+        if proc.poll() is not None:
+            raise RuntimeError(f"mlflow server exited with code {proc.returncode}; see {SERVER_LOG}")
+        time.sleep(1)
+    raise RuntimeError(f"mlflow server not healthy after {_SERVER_START_TIMEOUT_S}s; see {SERVER_LOG}")
 
 
 def _git(*args: str) -> str:
@@ -40,6 +94,7 @@ class Tracker:
             # MLflow prints emoji "View run" lines on set_terminated; don't crash on cp1252 consoles.
             if hasattr(sys.stdout, "reconfigure"):
                 sys.stdout.reconfigure(errors="replace")
+            ensure_mlflow_server()  # before MlflowClient(), which reads MLFLOW_TRACKING_URI
             from mlflow import MlflowClient
             self._client = MlflowClient()
 

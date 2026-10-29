@@ -50,19 +50,32 @@ python -m functional_tests.run_tests_batch
 
 ## Tracking results in MLflow
 
-### Setup (once per session)
+### Setup
+
+Nothing to do. When tracking is on, `tracking.py` defaults
+`MLFLOW_TRACKING_URI` to `http://127.0.0.1:5000` and, if no server answers
+there, starts one in the background and leaves it running:
 
 ```
-mlflow server --backend-store-uri sqlite:///mlflow.db --port 5000
-set MLFLOW_TRACKING_URI=http://localhost:5000
+mlflow server --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5000
 ```
 
-UI: <http://localhost:5000>, experiment `planner-behavioural`.
-Use a server rather than pointing at the SQLite file directly: the concurrent
+Its output goes to `mlflow_server.log` (repo root). To stop it (the server and
+its uvicorn child), in PowerShell:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe' AND CommandLine LIKE '%mlflow server%'" | ForEach-Object { taskkill /PID $_.ProcessId /T /F }
+```
+
+A non-local `MLFLOW_TRACKING_URI` is used as-is, never auto-started.
+
+UI: <http://127.0.0.1:5000>, experiment `planner-behavioural`.
+A server is used rather than the SQLite file directly: the concurrent
 runner has parallel writers.
 
-**`MLFLOW_TRACKING_URI` must be set before running the concurrent/batch runners**:
-both have `USE_MLFLOW = True` by default. Set it to `False` to skip tracking.
+The concurrent/batch runners have `USE_MLFLOW = True` by default; set it to
+`False` to skip tracking. Run them with the env activated (`conda activate llm`),
+not via `conda run`: `conda run` waits for the background server and never returns.
 
 `run.py` only logs when asked:
 
