@@ -152,6 +152,7 @@ async def main() -> None:
         # Fresh drive + agent per test — isolated in-memory state, no disk writes
         drive = FakeDrive()
         agent = TestAgent(fake_drive=drive, planner=planner, max_plan_steps=10, planner_model=args.model)
+        planner.reset_counts()
 
         t0 = time.perf_counter()
         status, error, tb = await tracker.run_test(tc, agent, drive)
@@ -169,7 +170,8 @@ async def main() -> None:
                 errored += 1
             print(tb, end="", file=sys.stderr)
             _print_call_log(drive)
-        tracker.record(tc.name, status, elapsed, drive.get_calls(), error, tb)
+        tracker.record(tc.name, status, elapsed, drive.get_calls(), error, tb,
+                       steps=planner.n_steps, llm_calls=planner.n_llm_calls)
 
     total = passed + failed + errored
     print(f"\n{'═' * 64}")

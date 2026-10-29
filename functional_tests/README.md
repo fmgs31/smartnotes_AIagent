@@ -100,12 +100,15 @@ One MLflow run = one model × one repeat.
 - **Description**: markdown summary (pass count, time, tool calls, warnings)
   plus a table of failed tests with the first line of each error.
 - **Metrics**: `pass_rate`, `passed`, `failed`, `errored`, `total_time_s`,
-  `total_tool_calls`, `avg_tool_calls`, `warnings` (loop-retry warnings;
-  concurrent runner only), and per test `test.<name>` (1 = pass, 0 = fail/error)
-  and `time.<name>`.
+  `total_tool_calls`, `avg_tool_calls`, `total_steps`, `avg_steps`,
+  `total_llm_calls`, `avg_llm_calls`, `warnings` (loop-retry warnings;
+  concurrent runner only), and per test `test.<name>` (1 = pass, 0 = fail/error),
+  `time.<name>`, `steps.<name>` (planner steps incl. the done step),
+  `llm_calls.<name>` (planner + summarizer calls) and `tool_calls.<name>`
+  (Drive calls, incl. refiner follow-ups).
 - **Artifacts**: `prompt.txt` (and `summarizer_prompt.txt` if any),
   `failures/<test>.txt` tracebacks, `results.json` table (one row per test:
-  status, elapsed, error, tool calls), and the run's `.log` file
+  status, elapsed, steps, LLM calls, error, tool calls), and the run's `.log` file
   (concurrent runner only).
 - **Traces** (`--trace` in `run.py`, `USE_TRACE` in the batch and concurrent
   runners): one trace per test with its OpenAI calls nested (messages, tokens,

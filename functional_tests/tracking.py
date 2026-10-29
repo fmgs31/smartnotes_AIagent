@@ -193,16 +193,21 @@ class Tracker:
                             source=AssessmentSource("CODE", "functional_tests"))
 
     def record(self, name: str, status: str, elapsed: float, calls: list[dict],
-               error: str = "", tb: str = "") -> None:
+               error: str = "", tb: str = "", steps: int = 0, llm_calls: int = 0) -> None:
         if not self.run_id:
             return
         # Logged in finish(), after the summary metrics: the UI lists metrics in logging order.
         self._test_metrics += [(f"test.{name}", 1.0 if status == "passed" else 0.0),
-                               (f"time.{name}", elapsed)]
+                               (f"time.{name}", elapsed),
+                               (f"steps.{name}", steps),
+                               (f"llm_calls.{name}", llm_calls),
+                               (f"tool_calls.{name}", len(calls))]
         self._rows.append({
             "test": name,
             "status": status,
             "elapsed_s": round(elapsed, 2),
+            "n_steps": steps,
+            "n_llm_calls": llm_calls,
             "n_tool_calls": len(calls),
             "tool_calls": "\n".join(f"[{c['step']}] {c['tool']} {c['args']}" for c in calls),
             "error": error,
@@ -234,12 +239,19 @@ class Tracker:
         total = passed + failed + errored
         total_time = time.perf_counter() - self._t0
         tool_calls = sum(r["n_tool_calls"] for r in self._rows)
+        steps = sum(r["n_steps"] for r in self._rows)
+        llm_calls = sum(r["n_llm_calls"] for r in self._rows)
+        n = len(self._rows)
         metrics = {
             "passed": passed, "failed": failed, "errored": errored,
             "pass_rate": passed / total if total else 0.0,
             "total_time_s": total_time,
             "total_tool_calls": tool_calls,
-            "avg_tool_calls": tool_calls / len(self._rows) if self._rows else 0.0,
+            "avg_tool_calls": tool_calls / n if n else 0.0,
+            "total_steps": steps,
+            "avg_steps": steps / n if n else 0.0,
+            "total_llm_calls": llm_calls,
+            "avg_llm_calls": llm_calls / n if n else 0.0,
         }
         if warnings is not None:
             metrics["warnings"] = warnings

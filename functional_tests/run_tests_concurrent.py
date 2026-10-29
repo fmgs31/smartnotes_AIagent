@@ -137,6 +137,7 @@ async def _execute_tests(model: str, tracker: Tracker, run_num: int) -> None:
 
         drive = FakeDrive()
         agent = TestAgent(fake_drive=drive, planner=planner, max_plan_steps=MAX_PLAN_STEPS, planner_model=model)
+        planner.reset_counts()
 
         t0 = time.perf_counter()
         status, error, tb = await tracker.run_test(tc, agent, drive)
@@ -154,7 +155,8 @@ async def _execute_tests(model: str, tracker: Tracker, run_num: int) -> None:
                 errored += 1
             print(tb, end="", file=sys.stderr)
             _print_call_log(drive)
-        tracker.record(tc.name, status, elapsed, drive.get_calls(), error, tb)
+        tracker.record(tc.name, status, elapsed, drive.get_calls(), error, tb,
+                       steps=planner.n_steps, llm_calls=planner.n_llm_calls)
 
     total = passed + failed + errored
     print(f"\n{'═' * 64}")
