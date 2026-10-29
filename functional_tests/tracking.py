@@ -3,19 +3,24 @@ Optional MLflow tracking for functional test runs.
 
 One MLflow run = one model × one repeat. Uses MlflowClient with explicit run
 ids (not the fluent active-run API) so concurrent asyncio runs in the same
-thread don't write into each other's run.
+thread don't write into each other's run. With trace=True each test is one
+trace (OpenAI calls autologged under it, pass/fail as feedback), linked to the
+run by run_id for the same reason.
 
 Tracking server is taken from MLFLOW_TRACKING_URI (default
 http://127.0.0.1:5000). For a local URI with nothing listening, the server is
 started automatically and left running so the UI stays available:
     mlflow server --backend-store-uri sqlite:///mlflow.db --port 5000
 """
+import asyncio
 import hashlib
 import os
 import subprocess
 import sys
 import time
+import traceback
 import urllib.request
+from contextlib import nullcontext
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -82,12 +87,31 @@ def _git(*args: str) -> str:
         return ""
 
 
+_tracing_experiment_id: str | None = None
+
+
+def _setup_tracing(exp_id: str) -> None:
+    """
+    Autolog OpenAI calls and point traces at the experiment (traces go to the
+    current experiment, not the run's). Once per process: redoing it resets the
+    tracer and drops spans still open in other concurrent runs.
+    """
+    global _tracing_experiment_id
+    if _tracing_experiment_id == exp_id:
+        return
+    import mlflow
+    mlflow.openai.autolog()
+    mlflow.set_experiment(experiment_id=exp_id)
+    _tracing_experiment_id = exp_id
+
+
 class Tracker:
     """No-op unless enabled; every method is safe to call either way."""
 
-    def __init__(self, enabled: bool, experiment: str = EXPERIMENT):
+    def __init__(self, enabled: bool, experiment: str = EXPERIMENT, trace: bool = False):
         self.enabled = enabled
         self.experiment = experiment
+        self.trace = enabled and trace
         self.run_id: str | None = None
         self._rows: list[dict] = []
         self._test_metrics: list[tuple[str, float]] = []
@@ -107,6 +131,8 @@ class Tracker:
         from mlflow.entities import Param
         exp = self._client.get_experiment_by_name(self.experiment)
         exp_id = exp.experiment_id if exp else self._client.create_experiment(self.experiment)
+        if self.trace:
+            _setup_tracing(exp_id)
         config = {
             "model_key": model_key,
             "full_name": resolved.full_name,
@@ -129,6 +155,42 @@ class Tracker:
         if resolved.summarizer_prompt:
             self._client.log_text(self.run_id, resolved.summarizer_prompt, "summarizer_prompt.txt")
         self._t0 = time.perf_counter()
+
+    async def run_test(self, tc, agent, drive) -> tuple[str, str, str]:
+        """
+        Run one test; return (status, error, traceback). With tracing on, the
+        test is one trace linked to this run, its pass/fail logged as feedback.
+        """
+        status, error, tb = "passed", "", ""
+        traced = bool(self.trace and self.run_id)
+        if traced:
+            import mlflow
+        with (mlflow.start_span(name=tc.name, span_type="AGENT", run_id=self.run_id)
+              if traced else nullcontext()) as span:
+            if span:
+                span.set_inputs({"test": tc.name, "description": tc.description})
+            try:
+                await tc.fn(agent, drive)
+            except AssertionError as exc:
+                status, error, tb = "failed", str(exc), traceback.format_exc()
+            except Exception as exc:
+                status, error, tb = "error", f"{type(exc).__name__}: {exc}", traceback.format_exc()
+            if span:
+                span.set_outputs({"status": status, "error": error,
+                                  "tool_calls": [f"[{c['step']}] {c['tool']} {c['args']}" for c in drive.get_calls()]})
+        if span:
+            # Off the event loop: the flush blocks until queued traces are stored.
+            await asyncio.to_thread(self._log_feedback, span.trace_id, status, error)
+        return status, error, tb
+
+    @staticmethod
+    def _log_feedback(trace_id: str, status: str, error: str) -> None:
+        import mlflow
+        from mlflow.entities import AssessmentSource
+        mlflow.flush_trace_async_logging()  # log_feedback needs the trace already stored
+        mlflow.log_feedback(trace_id=trace_id, name="passed", value=status == "passed",
+                            rationale=error or None,
+                            source=AssessmentSource("CODE", "functional_tests"))
 
     def record(self, name: str, status: str, elapsed: float, calls: list[dict],
                error: str = "", tb: str = "") -> None:

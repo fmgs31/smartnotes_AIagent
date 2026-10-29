@@ -19,8 +19,6 @@ import logging
 import os
 import sys
 import time
-import traceback
-from contextlib import nullcontext
 from pathlib import Path
 
 # ── Make the repo root importable when invoked as a script ───────────────────
@@ -140,17 +138,9 @@ async def main() -> None:
     print(f"model: {args.model}  →  {resolved.full_name}")
     print(f"prompt: {prompt_first_line}")
 
-    tracker = Tracker(args.mlflow, args.mlflow_experiment)
+    tracker = Tracker(args.mlflow, args.mlflow_experiment, trace=args.trace)
     tracker.start(args.model, resolved, args.mlflow_batch_name, args.repeat,
                   max_plan_steps=10, n_tests=len(tests))
-    trace = args.mlflow and args.trace
-    if trace:
-        # Traces link to the active run, so open the tracker's run in the fluent API.
-        import mlflow
-        from mlflow.entities import AssessmentSource
-        mlflow.set_experiment(args.mlflow_experiment)
-        mlflow.openai.autolog()
-        mlflow.start_run(run_id=tracker.run_id)
 
     passed = failed = errored = 0
 
@@ -163,21 +153,8 @@ async def main() -> None:
         drive = FakeDrive()
         agent = TestAgent(fake_drive=drive, planner=planner, max_plan_steps=10, planner_model=args.model)
 
-        status, error, tb = "passed", "", ""
         t0 = time.perf_counter()
-        # One root span per test; autologged OpenAI calls nest under it.
-        with (mlflow.start_span(name=tc.name, span_type="AGENT") if trace else nullcontext()) as span:
-            if span:
-                span.set_inputs({"test": tc.name, "description": tc.description})
-            try:
-                await tc.fn(agent, drive)
-            except AssertionError as exc:
-                status, error, tb = "failed", str(exc), traceback.format_exc()
-            except Exception as exc:
-                status, error, tb = "error", f"{type(exc).__name__}: {exc}", traceback.format_exc()
-            if span:
-                span.set_outputs({"status": status, "error": error,
-                                  "tool_calls": [f"[{c['step']}] {c['tool']} {c['args']}" for c in drive.get_calls()]})
+        status, error, tb = await tracker.run_test(tc, agent, drive)
         elapsed = time.perf_counter() - t0
 
         if status == "passed":
@@ -194,18 +171,10 @@ async def main() -> None:
             _print_call_log(drive)
         tracker.record(tc.name, status, elapsed, drive.get_calls(), error, tb)
 
-        if span:
-            mlflow.flush_trace_async_logging()  # log_feedback needs the trace already stored
-            mlflow.log_feedback(trace_id=span.trace_id, name="passed", value=status == "passed",
-                                rationale=error or None,
-                                source=AssessmentSource("CODE", "functional_tests"))
-
     total = passed + failed + errored
     print(f"\n{'═' * 64}")
     print(f"Results: {passed} passed  |  {failed} failed  |  {errored} errors  |  {total} total")
 
-    if trace:
-        mlflow.end_run()
     tracker.finish(passed, failed, errored)
 
     sys.exit(0 if (failed + errored) == 0 else 1)

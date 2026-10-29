@@ -45,6 +45,7 @@ MODELS = list(RUNS_PER_MODEL.keys())
 MAX_CONCURRENT = 2
 MAX_PLAN_STEPS = 10
 USE_MLFLOW = True  # needs MLFLOW_TRACKING_URI pointing at a running `mlflow server`
+USE_TRACE = True  # with USE_MLFLOW: one trace per test, shown in the run's evaluation panel
 
 
 WARNING_MARKER = "WARNING loop retries:"
@@ -138,27 +139,22 @@ async def _execute_tests(model: str, tracker: Tracker, run_num: int) -> None:
         agent = TestAgent(fake_drive=drive, planner=planner, max_plan_steps=MAX_PLAN_STEPS, planner_model=model)
 
         t0 = time.perf_counter()
-        try:
-            await tc.fn(agent, drive)
-            elapsed = time.perf_counter() - t0
+        status, error, tb = await tracker.run_test(tc, agent, drive)
+        elapsed = time.perf_counter() - t0
+
+        if status == "passed":
             print(f"  ✓  PASSED  ({elapsed:.1f}s)")
             passed += 1
-            tracker.record(tc.name, "passed", elapsed, drive.get_calls())
-        except AssertionError as exc:
-            elapsed = time.perf_counter() - t0
-            print(f"  ✗  FAILED  ({elapsed:.1f}s)")
-            traceback.print_exc()
+        else:
+            if status == "failed":
+                print(f"  ✗  FAILED  ({elapsed:.1f}s)")
+                failed += 1
+            else:
+                print(f"  !  ERROR   ({elapsed:.1f}s)  {error}")
+                errored += 1
+            print(tb, end="", file=sys.stderr)
             _print_call_log(drive)
-            failed += 1
-            tracker.record(tc.name, "failed", elapsed, drive.get_calls(), str(exc), traceback.format_exc())
-        except Exception as exc:
-            elapsed = time.perf_counter() - t0
-            print(f"  !  ERROR   ({elapsed:.1f}s)  {type(exc).__name__}: {exc}")
-            traceback.print_exc()
-            _print_call_log(drive)
-            errored += 1
-            tracker.record(tc.name, "error", elapsed, drive.get_calls(),
-                           f"{type(exc).__name__}: {exc}", traceback.format_exc())
+        tracker.record(tc.name, status, elapsed, drive.get_calls(), error, tb)
 
     total = passed + failed + errored
     print(f"\n{'═' * 64}")
@@ -194,7 +190,7 @@ async def _run_one(
         _console(f'>>> START  {model} run {run_num}/{total_runs}  ->  {rel}')
         t0 = time.perf_counter()
         crashed = False
-        tracker = Tracker(USE_MLFLOW, MLFLOW_EXPERIMENT)
+        tracker = Tracker(USE_MLFLOW, MLFLOW_EXPERIMENT, trace=USE_TRACE)
         with open(log_file, 'w', encoding='utf-8', errors='replace') as f:
             f.write(f'=== {model} run {run_num}/{total_runs} ===\n\n')
             f.flush()
