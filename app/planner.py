@@ -127,6 +127,7 @@ class Planner:
         model = self._model_registry.resolve(planner_model)
         log.info(
             f"Calling LLM now: Planning next step: model={model.full_name} prompt={model.prompt_file} "
+            f"reasoning_effort={model.reasoning_effort or 'default'} "
             f"remaining_steps={remaining_steps}, executed_steps={len(executed_steps or [])}"
         )
         log.debug("plan_next_step user prompt:\n%s", core_context)

@@ -44,9 +44,12 @@ def get_openai_client() -> AsyncOpenAI:
     return _openai_client
 
 
-def _make_openai_generate_fn(full_name: str) -> Callable:
-    """Build the async generate callable for one OpenAI model (binds the model name)."""
+def _make_openai_generate_fn(full_name: str, reasoning_effort: str | None) -> Callable:
+    """Build the async generate callable for one OpenAI model (binds the model name and effort)."""
     client = get_openai_client()
+    # Unset = the model's API default, which differs per model (e.g. gpt-5.4-nano
+    # defaults to "none", gpt-5.6-luna to "medium").
+    reasoning = {"reasoning": {"effort": reasoning_effort}} if reasoning_effort else {}
 
     async def _generate(*, input: list[dict], schema: dict) -> str:
         # Retry on OpenAI RateLimitError (HTTP 429). TPM is a rolling 1-minute
@@ -61,6 +64,7 @@ def _make_openai_generate_fn(full_name: str) -> Callable:
                 resp = await client.responses.create(
                     model=full_name,
                     input=input,
+                    **reasoning,
                     text={
                         "format": {
                             "type": "json_schema",
@@ -81,9 +85,9 @@ def _make_openai_generate_fn(full_name: str) -> Callable:
     return _generate
 
 
-# Vendor name -> factory: (full_name: str) -> async callable(*, input, schema) -> str
+# Vendor name -> factory: (full_name: str, reasoning_effort: str | None) -> async callable(*, input, schema) -> str
 # Add an entry here when introducing a new vendor.
-_CLIENT_FACTORIES: dict[str, Callable[[str], Callable]] = {
+_CLIENT_FACTORIES: dict[str, Callable[[str, str | None], Callable]] = {
     "open_ai": _make_openai_generate_fn,
 }
 
@@ -100,6 +104,7 @@ class ResolvedModel:
         generate_fn: Callable,
         summarizer_prompt: str | None = None,
         prompt_file: str = "",
+        reasoning_effort: str | None = None,
     ):
         self.full_name = full_name
         self.prompt = prompt
@@ -107,6 +112,7 @@ class ResolvedModel:
         # Kept for logging only: which prompt version produced a given plan is the
         # first thing needed when diagnosing a failed request from its logs.
         self.prompt_file = prompt_file
+        self.reasoning_effort = reasoning_effort
         self._generate_fn = generate_fn
         # When set, the planner emits a lean next-step output (no summary fields)
         # and a separate LLM call with this prompt produces full_task_summary + items.
@@ -147,9 +153,10 @@ class ModelRegistry:
                 full_name=attrs["full_name"],
                 prompt=(prompts_folder / attrs["prompt_file"]).read_text(encoding="utf-8").strip(),
                 vendor=attrs["vendor"],
-                generate_fn=_CLIENT_FACTORIES[attrs["vendor"]](attrs["full_name"]),
+                generate_fn=_CLIENT_FACTORIES[attrs["vendor"]](attrs["full_name"], attrs.get("reasoning_effort")),
                 summarizer_prompt=_load_summarizer_prompt(attrs),
                 prompt_file=attrs["prompt_file"],
+                reasoning_effort=attrs.get("reasoning_effort"),
             )
             for name, attrs in models.items()
         }

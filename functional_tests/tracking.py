@@ -138,6 +138,7 @@ class Tracker:
             "full_name": resolved.full_name,
             "prompt_file": resolved.prompt_file,
             "prompt_sha": hashlib.sha256(resolved.prompt.encode("utf-8")).hexdigest()[:12],
+            "reasoning_effort": resolved.reasoning_effort or "default",
         }
         tags = {
             # Tag key stays "batch" so filters on runs logged before the rename keep working.

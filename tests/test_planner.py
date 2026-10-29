@@ -24,7 +24,7 @@ def build_registry(tmp_path: Path, monkeypatch):
         # Track which complete_fn was built for each full_name so tests can assert on them.
         complete_mocks: dict[str, AsyncMock] = {}
 
-        def mock_factory(full_name):
+        def mock_factory(full_name, reasoning_effort=None):
             mock = AsyncMock(return_value='{"done": true}')
             complete_mocks[full_name] = mock
             return mock

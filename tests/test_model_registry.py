@@ -23,7 +23,7 @@ def write_prompt_map(tmp_path: Path, monkeypatch):
         complete_mocks = {v: AsyncMock(return_value='{"done": true}') for v in vendors}
         monkeypatch.setattr(
             "app.model_registry._CLIENT_FACTORIES",
-            {v: (lambda full_name, v=v: complete_mocks[v]) for v in vendors},
+            {v: (lambda full_name, reasoning_effort=None, v=v: complete_mocks[v]) for v in vendors},
         )
         return map_path, complete_mocks
     return _write
@@ -101,7 +101,7 @@ class TestInitValidation:
 
     def test_missing_top_level_keys_raises(self, tmp_path, monkeypatch):
         # The file must declare both 'default_model' and 'models'.
-        monkeypatch.setattr("app.model_registry._CLIENT_FACTORIES", {"open_ai": lambda full_name: AsyncMock(return_value='{"done": true}')})
+        monkeypatch.setattr("app.model_registry._CLIENT_FACTORIES", {"open_ai": lambda full_name, reasoning_effort=None: AsyncMock(return_value='{"done": true}')})
         map_path = tmp_path / "m.json"
         map_path.write_text(json.dumps({"models": {}}), encoding="utf-8")
         with pytest.raises(ValueError, match="default_model.*models"):
@@ -109,7 +109,7 @@ class TestInitValidation:
 
     def test_missing_per_model_keys_raises(self, tmp_path, monkeypatch):
         # Each model entry must declare full_name + vendor + prompt_file.
-        monkeypatch.setattr("app.model_registry._CLIENT_FACTORIES", {"open_ai": lambda full_name: AsyncMock(return_value='{"done": true}')})
+        monkeypatch.setattr("app.model_registry._CLIENT_FACTORIES", {"open_ai": lambda full_name, reasoning_effort=None: AsyncMock(return_value='{"done": true}')})
         map_path = tmp_path / "m.json"
         map_path.write_text(json.dumps({
             "default_model": "x",
@@ -140,3 +140,44 @@ class TestInitValidation:
         )
         with pytest.raises(ValueError, match="default_model.*not a registered"):
             _build(map_path, tmp_path)
+
+
+class TestReasoningEffort:
+    """Optional per-model reasoning_effort: passed to the vendor factory and sent to the API only when set."""
+
+    def test_effort_passed_to_factory_and_exposed(self, tmp_path, monkeypatch):
+        # The registry hands each model's reasoning_effort (or None) to its factory.
+        seen: dict[str, str | None] = {}
+
+        def factory(full_name, reasoning_effort):
+            seen[full_name] = reasoning_effort
+            return AsyncMock(return_value='{"done": true}')
+
+        monkeypatch.setattr("app.model_registry._CLIENT_FACTORIES", {"open_ai": factory})
+        (tmp_path / "p.txt").write_text("PROMPT", encoding="utf-8")
+        map_path = tmp_path / "m.json"
+        map_path.write_text(json.dumps({
+            "default_model": "a",
+            "models": {
+                "a": {"full_name": "a-1", "vendor": "open_ai", "prompt_file": "p.txt", "reasoning_effort": "low"},
+                "b": {"full_name": "b-1", "vendor": "open_ai", "prompt_file": "p.txt"},
+            },
+        }), encoding="utf-8")
+        registry = _build(map_path, tmp_path)
+        assert seen == {"a-1": "low", "b-1": None}, f"Unexpected efforts passed to factory: {seen!r}"
+        assert registry.resolve("a").reasoning_effort == "low"
+        assert registry.resolve("b").reasoning_effort is None
+
+    @pytest.mark.parametrize("effort, expected", [("low", {"effort": "low"}), (None, None)])
+    def test_openai_fn_sends_reasoning_only_when_set(self, monkeypatch, effort, expected):
+        # Unset effort must not send a `reasoning` field, so the model keeps its API default.
+        import asyncio
+        from app import model_registry
+
+        client = MagicMock()
+        client.responses.create = AsyncMock(return_value=MagicMock(output_text='{"done": true}'))
+        monkeypatch.setattr(model_registry, "get_openai_client", lambda: client)
+        fn = model_registry._make_openai_generate_fn("m-1", effort)
+        asyncio.run(fn(input=[], schema={}))
+        kwargs = client.responses.create.call_args.kwargs
+        assert kwargs.get("reasoning") == expected, f"Expected reasoning={expected!r}, got {kwargs.get('reasoning')!r}"
