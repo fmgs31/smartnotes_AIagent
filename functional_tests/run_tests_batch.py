@@ -66,7 +66,7 @@ def run_one(model: str, run_num: int, total_runs: int, log_dir: Path, base_dir: 
 
 def main() -> int:
     base_dir = Path(__file__).resolve().parent.parent
-    log_dir = base_dir / 'failed_logs' / OUTPUT_LOG_FOLDER
+    log_dir = base_dir / 'functional_tests_logs' / OUTPUT_LOG_FOLDER
     log_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[tuple[str, int, int]] = []

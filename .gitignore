@@ -36,7 +36,7 @@ deploy copy.sh
 
 # ---- Logs --------------------------------------------------------------
 mcp_server_debug.log
-failed_logs/*
+functional_tests_logs/*
 diagnostics_data/
 
 # ---- Local development files -------------------------------------------

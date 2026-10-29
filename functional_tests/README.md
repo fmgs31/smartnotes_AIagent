@@ -12,7 +12,7 @@ All commands run from the repo root, in the project env (`conda activate llm`).
 | File | What it does |
 |---|---|
 | `run.py` | Main entry point. Runs all tests (or one) for a single model. |
-| `run_tests_concurrent.py` | Runs the suite for many models × repeats **in-process**, up to `MAX_CONCURRENT` at a time. One log per run in `failed_logs/<OUTPUT_LOG_FOLDER>/`; console shows only start/finish lines and a summary. Preferred for comparisons. |
+| `run_tests_concurrent.py` | Runs the suite for many models × repeats **in-process**, up to `MAX_CONCURRENT` at a time. One log per run in `functional_tests_logs/<OUTPUT_LOG_FOLDER>/`; console shows only start/finish lines and a summary. Preferred for comparisons. |
 | `run_tests_batch.py` | Same idea, but **sequential**, one `run.py` subprocess per (model, repeat). Slower; useful if in-process runs misbehave. |
 | `functional_tests.py` | Test cases (`ALL_TESTS`), `TestAgent`, `make_planner`. |
 | `fake_drive.py` | In-memory Drive stub; records every tool call (`get_calls()`). |

@@ -227,7 +227,7 @@ async def main() -> int:
         _console("ERROR: OPENAI_API_KEY is not set.")
         return 1
 
-    log_dir = ROOT / 'failed_logs' / OUTPUT_LOG_FOLDER
+    log_dir = ROOT / 'functional_tests_logs' / OUTPUT_LOG_FOLDER
     log_dir.mkdir(parents=True, exist_ok=True)
 
     sem = asyncio.Semaphore(MAX_CONCURRENT)
