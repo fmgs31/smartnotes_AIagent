@@ -782,6 +782,231 @@ async def test_memory_surfaces_used_spreadsheet(agent: TestAgent, drive: FakeDri
     print(f"    memory context items: {sorted(context_ids)}")
 
 
+# Production step budget (app/config.py max_plan_steps). The runners build
+# agents with 10 steps, which hides failures caused by wasted steps.
+_PROD_MAX_PLAN_STEPS = 5
+
+_LAST_CUENTO_REQUEST = (
+    "Agregar a la última idea de cuento que se creó, que el fantasma se mueve de "
+    "historia en historia entre los libros y termina matando a los lectores y que "
+    "sólo cobra vida en el momento en que se lee."
+)
+_LAST_CUENTO_CONTENT = (
+    "Cuento de terror: el espíritu que sale del cuento\n\n"
+    "Un espíritu vive atrapado dentro de un cuento y sale al mundo real cada vez "
+    "que alguien lo lee en voz alta.\n"
+)
+
+
+def _seed_last_cuento_idea(drive: FakeDrive) -> dict[str, dict]:
+    """
+    Mirror the prod Drive of the 2026-10-13 failure: 'Cuentos' holds only
+    subfolders, the idea docs live in 'Cuentos/Ideas', and the newest idea is
+    'Cuento de terror: el espíritu que sale del cuento'. Decoys outside
+    Cuentos/Ideas are newer, so an unscoped "newest doc" search picks wrong.
+    """
+    cuentos = drive.find_by_name("Cuentos", MIME_FOLDER)
+    ideas = drive.find_by_name("Ideas", MIME_FOLDER)
+    assert cuentos and ideas and ideas["parent_id"] == cuentos["id"], "template missing Cuentos/Ideas"
+
+    en_proceso = drive.create_folder("En proceso", cuentos["id"])
+    casi_listos = drive.create_folder("Casi listos", cuentos["id"])
+    completos = drive.create_folder("Completos", cuentos["id"])
+    herramientas = drive.create_folder("Herramientas", cuentos["id"])
+
+    drive.create_doc("El faro que no alumbra", ideas["id"],
+                     "Un faro que solo se enciende cuando no hay barcos.\n",
+                     created="2026-03-02T08:10:00.000Z")
+    drive.create_doc("La niña de las llaves", ideas["id"],
+                     "Una niña colecciona llaves de puertas que ya no existen.\n",
+                     created="2026-07-20T21:30:00.000Z")
+    target = drive.create_doc("Cuento de terror: el espíritu que sale del cuento", ideas["id"],
+                              _LAST_CUENTO_CONTENT,
+                              created="2026-10-12T13:54:32.674Z",
+                              modified="2026-10-12T13:54:35.275Z")
+    drive.make_tabbed(target["id"])  # prod doc was tab-based (TabAwareInspectRefiner fired)
+    drive.create_doc("Gualicho / Tierra y huesos", en_proceso["id"],
+                     "Borrador del cuento del gualicho.\n",
+                     created="2026-02-06T01:40:11.978Z", modified="2026-10-12T09:58:20.839Z")
+    drive.create_doc("Preguntas para cuestionar al cuento", herramientas["id"],
+                     "¿Qué quiere el personaje? ¿Qué le impide conseguirlo?\n",
+                     created="2026-08-29T05:58:43.403Z", modified="2026-10-12T14:20:00.000Z")
+    drive.create_doc("Lista de compras", "root", "Pan, leche, café.\n",
+                     created="2026-10-12T15:02:00.000Z")
+
+    return {
+        "cuentos": cuentos, "ideas": ideas, "en_proceso": en_proceso,
+        "casi_listos": casi_listos, "completos": completos, "target": target,
+    }
+
+
+def _last_cuento_known_items(drive: FakeDrive, seeded: dict[str, dict]) -> list[dict]:
+    """Prod Known Drive items: Cuentos followed by four of its subfolders (not Herramientas)."""
+    known = build_known_items(drive)
+    sub = [
+        {"name": seeded[key]["name"], "id": seeded[key]["id"], "type": "folder", "location": "Cuentos"}
+        for key in ("en_proceso", "ideas", "casi_listos", "completos")
+    ]
+    at = next(i for i, k in enumerate(known) if k["name"] == "Cuentos") + 1
+    return known[:at] + sub + known[at:]
+
+
+def _rejected_end_index_inserts(drive: FakeDrive) -> list[dict]:
+    """modify_doc_text insertions the Docs API rejected for start_index >= segment end."""
+    return [
+        c for c in drive.get_calls("modify_doc_text")
+        if "must be less than the end index" in str(c.get("result", ""))
+    ]
+
+
+def _is_folder_type(file_type: str | None) -> bool:
+    return str(file_type or "").lower() in ("folder", MIME_FOLDER)
+
+
+async def test_append_to_last_cuento_idea(agent: TestAgent, drive: FakeDrive) -> None:
+    """
+    Production failure (2026-10-13, diagnostics_data/failed_calls/
+    failed_20261013-025839_smartnotes-gateway.*): "add to the last cuento idea
+    that was created" ran out of the 5-step budget. The text was written, but
+    the user got an error. Each problem from that trail is checked separately
+    and all detected ones are reported together:
+
+      P1  looked for the idea docs in 'Cuentos' instead of 'Cuentos/Ideas'
+          (both ids were in Known Drive items)
+      P2  listed Cuentos' subfolders, already given by Known Drive items
+      P3  unscoped Drive search (prod: name contains '') instead of
+          searching inside Cuentos/Ideas
+      P5  inserted at start_index == total_length → Docs API 400, repaired
+          only by InsertIndexBoundsRefiner
+      OUT ran out of steps / wrong doc / duplicate or missing text
+    """
+    seeded = _seed_last_cuento_idea(drive)
+    cuentos, ideas, target = seeded["cuentos"], seeded["ideas"], seeded["target"]
+    known_items = _last_cuento_known_items(drive, seeded)
+    ids_before = set(drive.items.keys())
+    contents_before = dict(drive.contents)
+
+    prod_agent = TestAgent(
+        fake_drive=drive,
+        planner=agent._planner,
+        max_plan_steps=_PROD_MAX_PLAN_STEPS,
+        planner_model=agent.planner_model,
+    )
+    problems: list[str] = []
+
+    print(f"Request: {_LAST_CUENTO_REQUEST}")
+    result = None
+    try:
+        result, _ = await prod_agent.execute(
+            text=_LAST_CUENTO_REQUEST,
+            token="fake-token",
+            user_guidelines=USER_GUIDELINES,
+            known_drive_items=known_items,
+            planner_model=prod_agent.planner_model,
+        )
+    except RuntimeError as exc:
+        if "Max steps" not in str(exc):
+            raise
+        problems.append(f"OUT: {exc}")
+
+    calls = drive.get_calls()
+    for c in calls:
+        tool, args = c["tool"], c["args"]
+        where = f"call {c['step']}: {tool} {args}"
+        if tool == "list_drive_items" and args.get("folder_id") == cuentos["id"]:
+            if _is_folder_type(args.get("file_type")):
+                problems.append(f"P2 listed Cuentos' subfolders (already in Known Drive items) — {where}")
+            else:
+                problems.append(
+                    f"P1 looked for idea docs in 'Cuentos' ({cuentos['id']}) instead of "
+                    f"'Cuentos/Ideas' ({ideas['id']}) — {where}"
+                )
+        if tool == "search_drive_files" and "in parents" not in str(args.get("query", "")):
+            problems.append(f"P3 unscoped Drive search instead of searching inside Cuentos/Ideas — {where}")
+        if tool == "search_docs":
+            problems.append(f"P3 unscoped search_docs instead of listing Cuentos/Ideas — {where}")
+
+    for c in _rejected_end_index_inserts(drive):
+        problems.append(
+            f"P5 insert at start_index={c['args'].get('start_index')} rejected by the Docs API: "
+            f"{c['result']}"
+        )
+
+    content = drive.contents.get(target["id"], "")
+    if not content.startswith(_LAST_CUENTO_CONTENT.rstrip("\n")):
+        problems.append(f"OUT original idea text modified: {content!r}")
+    occurrences = content.lower().count("lector")
+    if occurrences != 1:
+        problems.append(f"OUT dictated text appears {occurrences} times in the target doc: {content!r}")
+    for doc_id, before in contents_before.items():
+        if doc_id != target["id"] and drive.contents.get(doc_id) != before:
+            problems.append(f"OUT wrong doc modified: '{drive.items[doc_id]['name']}'")
+    new_docs = _new_docs(drive, ids_before)
+    if new_docs:
+        problems.append(f"OUT created a new doc instead of appending: {[d['name'] for d in new_docs]}")
+    if result is not None and target["id"] not in {i.id for i in result.items}:
+        problems.append(f"OUT target doc not in summary items: {[i.name for i in result.items]}")
+
+    print(f"    tool calls: {len(calls)} (budget {_PROD_MAX_PLAN_STEPS} planner steps)")
+    print(f"    doc tail: {content[-150:]!r}")
+    assert not problems, (
+        f"{len(problems)} problem(s) from the 2026-10-13 prod failure reproduced:\n  - "
+        + "\n  - ".join(problems)
+    )
+
+
+async def test_append_index_off_by_one(agent: TestAgent, drive: FakeDrive) -> None:
+    """
+    Step 5 of the 2026-10-13 failure in isolation (seen in prod before too):
+    after inspect_doc_structure reports total_length=N the planner inserts at
+    start_index=N, which the Docs API rejects ("Index N must be less than the
+    end index of the referenced segment, N"). InsertIndexBoundsRefiner hides
+    it by retrying at N-1, costing extra API calls and ~20s in prod.
+
+    The target doc is handed over directly in Known Drive items so only the
+    inspect → insert pair is exercised. Suspected cause is the MCP server's
+    own guidance (inspect_doc_structure docstring: "total_length: Maximum safe
+    index for insertion"), so this test is the one to rerun when changing the
+    server's output or tool descriptions.
+    """
+    seeded = _seed_last_cuento_idea(drive)
+    target = seeded["target"]
+    known_items = build_known_items(drive) + [
+        {"name": target["name"], "id": target["id"], "type": "document", "location": "Cuentos/Ideas"},
+    ]
+    text = (
+        f"Agregar al documento '{target['name']}': el fantasma termina matando "
+        "a los lectores y sólo cobra vida en el momento en que se lee."
+    )
+    print(f"Request: {text}")
+    result, _ = await agent.execute(
+        text=text,
+        token="fake-token",
+        user_guidelines=USER_GUIDELINES,
+        known_drive_items=known_items,
+        planner_model=agent.planner_model,
+    )
+    assert result is not None, "Agent returned no FullTaskSummary"
+
+    content = drive.contents.get(target["id"], "")
+    assert content.startswith(_LAST_CUENTO_CONTENT.rstrip("\n")), (
+        f"Original content was modified or inserted into.\ncontent: {content!r}"
+    )
+    occurrences = content.lower().count("lector")
+    assert occurrences == 1, f"Expected dictated text once, got {occurrences}.\ncontent={content!r}"
+
+    rejected = _rejected_end_index_inserts(drive)
+    inspected = [str(c.get("result", "")) for c in drive.get_calls("inspect_doc_structure")]
+    assert not rejected, (
+        "Planner inserted at the segment end index (off-by-one); the Docs API rejected it "
+        "and only InsertIndexBoundsRefiner saved the write.\n"
+        + "\n".join(f"  start_index={c['args'].get('start_index')} → {c['result']}" for c in rejected)
+        + "\ninspect_doc_structure output the planner saw:\n"
+        + "\n".join(inspected)
+    )
+    print(f"    doc tail: {content[-150:]!r}")
+
+
 # ─── Registry ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -851,5 +1076,15 @@ ALL_TESTS: list[TestCase] = [
         "memory_surfaces_used_spreadsheet",
         test_memory_surfaces_used_spreadsheet,
         "Memory chain: file stored on 1st use (not yet surfaced), surfaced after 2nd use",
+    ),
+    TestCase(
+        "append_to_last_cuento_idea",
+        test_append_to_last_cuento_idea,
+        "Prod 2026-10-13 replay (5 steps): append to newest doc in Cuentos/Ideas; flags each wasted/wrong step",
+    ),
+    TestCase(
+        "append_index_off_by_one",
+        test_append_index_off_by_one,
+        "Append to a known doc must not insert at total_length (Docs API rejects; refiner masks it)",
     ),
 ]
