@@ -127,8 +127,29 @@ the gateway at it and run the gateway on another port:
 # terminal 1 — MCP server (from servers/google_workspace_mcp)
 python main.py --transport streamable-http --tools drive docs sheets
 
-# terminal 2 — gateway
+# terminal 2 — gateway (load .env into this console first, see below)
 uvicorn app.main:app --port 8001 --reload
+```
+
+Terminal 2 needs the `.env` variables exported into the console before
+starting uvicorn:
+
+```bash
+# Linux / macOS (bash)
+set -a; source .env; set +a
+```
+
+```powershell
+# Windows (PowerShell)
+Get-Content .env | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Object {
+    $name, $value = $_ -split '=', 2
+    Set-Item "env:$($name.Trim())" $value.Trim().Trim('"')
+}
+```
+
+```bat
+:: Windows (cmd) — values must not be wrapped in quotes in .env
+for /f "usebackq eol=# tokens=1,* delims==" %a in (".env") do set "%a=%b"
 ```
 
 Check it is up: `curl http://localhost:8001/health` → `{"ok":true}`
