@@ -115,6 +115,8 @@ class Tracker:
         self.run_id: str | None = None
         self._rows: list[dict] = []
         self._test_metrics: list[tuple[str, float]] = []
+        self._tokens: dict[str, dict[str, int]] = {}  # test name -> trace token usage
+        self._trace_tags: dict[str, str] = {}
         self._t0 = 0.0
         if enabled:
             # MLflow prints emoji "View run" lines on set_terminated; don't crash on cp1252 consoles.
@@ -152,6 +154,8 @@ class Tracker:
         }
         run = self._client.create_run(exp_id, run_name=f"{mlflow_batch_name}/{model_key}/r{repeat_idx}", tags=tags)
         self.run_id = run.info.run_id
+        # Copied onto each trace so the Traces tab can filter by them (e.g. tags.batch_name = 'v17').
+        self._trace_tags = {k: tags[k] for k in ("batch", "batch_name", "model_key", "repeat")}
         params = {**config, "max_plan_steps": max_plan_steps, "n_tests": n_tests}
         self._client.log_batch(self.run_id, params=[Param(k, str(v)) for k, v in params.items()])
         self._client.log_text(self.run_id, resolved.prompt, "prompt.txt")
@@ -172,6 +176,7 @@ class Tracker:
               if traced else nullcontext()) as span:
             if span:
                 span.set_inputs({"test": tc.name, "description": tc.description})
+                mlflow.update_current_trace(tags=self._trace_tags)
             try:
                 await tc.fn(agent, drive)
             except AssertionError as exc:
@@ -183,28 +188,36 @@ class Tracker:
                                   "tool_calls": [f"[{c['step']}] {c['tool']} {c['args']}" for c in drive.get_calls()]})
         if span:
             # Off the event loop: the flush blocks until queued traces are stored.
-            await asyncio.to_thread(self._log_feedback, span.trace_id, status, error)
+            usage = await asyncio.to_thread(self._log_feedback, span.trace_id, status, error)
+            if usage:
+                self._tokens[tc.name] = usage
         return status, error, tb
 
     @staticmethod
-    def _log_feedback(trace_id: str, status: str, error: str) -> None:
+    def _log_feedback(trace_id: str, status: str, error: str) -> dict[str, int] | None:
+        """Log pass/fail on the trace; return the trace's token usage (None if unavailable)."""
         import mlflow
         from mlflow.entities import AssessmentSource
         mlflow.flush_trace_async_logging()  # log_feedback needs the trace already stored
         mlflow.log_feedback(trace_id=trace_id, name="passed", value=status == "passed",
                             rationale=error or None,
                             source=AssessmentSource("CODE", "functional_tests"))
+        trace = mlflow.get_trace(trace_id)
+        return trace.info.token_usage if trace else None
 
     def record(self, name: str, status: str, elapsed: float, calls: list[dict],
                error: str = "", tb: str = "", steps: int = 0, llm_calls: int = 0) -> None:
         if not self.run_id:
             return
+        usage = self._tokens.get(name, {})
         # Logged in finish(), after the summary metrics: the UI lists metrics in logging order.
         self._test_metrics += [(f"test.{name}", 1.0 if status == "passed" else 0.0),
                                (f"time.{name}", elapsed),
                                (f"steps.{name}", steps),
                                (f"llm_calls.{name}", llm_calls),
                                (f"tool_calls.{name}", len(calls))]
+        if usage:
+            self._test_metrics.append((f"tokens.{name}", usage.get("total_tokens", 0)))
         self._rows.append({
             "test": name,
             "status": status,
@@ -212,6 +225,9 @@ class Tracker:
             "n_steps": steps,
             "n_llm_calls": llm_calls,
             "n_tool_calls": len(calls),
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
             "tool_calls": "\n".join(f"[{c['step']}] {c['tool']} {c['args']}" for c in calls),
             "error": error,
         })
@@ -256,6 +272,11 @@ class Tracker:
             "total_llm_calls": llm_calls,
             "avg_llm_calls": llm_calls / n if n else 0.0,
         }
+        if self._tokens:
+            for kind in ("input_tokens", "output_tokens", "total_tokens"):
+                run_total = sum(r[kind] for r in self._rows)
+                metrics[kind] = run_total  # run-wide sum; kind already reads as a total
+                metrics[f"avg_{kind}"] = run_total / n if n else 0.0
         if warnings is not None:
             metrics["warnings"] = warnings
         for key, value in [*metrics.items(), *self._test_metrics]:
