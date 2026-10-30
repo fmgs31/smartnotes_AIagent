@@ -19,6 +19,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 # ── Make the repo root importable when invoked as a script ───────────────────
@@ -89,7 +90,8 @@ async def main() -> None:
     )
     parser.add_argument(
         "--mlflow-batch-name", default="adhoc",
-        help="MLflow 'batch' tag grouping runs to compare, e.g. v9b (only used with --mlflow)",
+        help="MLflow 'batch_name' tag, e.g. v9b; the 'batch' tag gets <name>_<timestamp> "
+             "(only used with --mlflow)",
     )
     parser.add_argument(
         "--mlflow-experiment", default=EXPERIMENT,
@@ -143,8 +145,11 @@ async def main() -> None:
     print(f"model: {args.model}  →  {resolved.full_name}")
     print(f"prompt: {prompt_first_line}")
 
+    # run_tests_batch.py sets MLFLOW_BATCH_ID so all its child runs share one id.
+    batch_id = os.environ.get("MLFLOW_BATCH_ID") or \
+        f"{args.mlflow_batch_name}_{datetime.now():%Y%m%d_%H%M%S}"
     tracker = Tracker(args.mlflow, args.mlflow_experiment, trace=args.trace)
-    tracker.start(args.model, resolved, args.mlflow_batch_name, args.repeat_idx,
+    tracker.start(args.model, resolved, args.mlflow_batch_name, batch_id, args.repeat_idx,
                   max_plan_steps=10, n_tests=len(tests))
 
     passed = failed = errored = 0

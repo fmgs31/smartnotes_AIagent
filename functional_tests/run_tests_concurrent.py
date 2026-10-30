@@ -18,6 +18,7 @@ import os
 import sys
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -36,7 +37,9 @@ from functional_tests.tracking import Tracker  # noqa: E402
 
 # ── Configuration ────────────────────────────────────────────────────────────
 MLFLOW_EXPERIMENT = 'v17'
-OUTPUT_LOG_FOLDER = MLFLOW_EXPERIMENT
+MLFLOW_BATCH_NAME = 'v17'
+MLFLOW_BATCH_ID = f'{MLFLOW_BATCH_NAME}_{datetime.now():%Y%m%d_%H%M%S}'
+OUTPUT_LOG_FOLDER = f'{MLFLOW_EXPERIMENT}/{MLFLOW_BATCH_ID}'
 RUNS_PER_MODEL = {
     'gpt-5.4-nano': 2,
     'gpt-5.6-luna': 2,
@@ -126,7 +129,7 @@ async def _execute_tests(model: str, tracker: Tracker, repeat_idx: int) -> None:
     prompt_first_line = resolved.prompt.splitlines()[0]
     print(f"model: {model}  →  {resolved.full_name}")
     print(f"prompt: {prompt_first_line}")
-    tracker.start(model, resolved, OUTPUT_LOG_FOLDER, repeat_idx,
+    tracker.start(model, resolved, MLFLOW_BATCH_NAME, MLFLOW_BATCH_ID, repeat_idx,
                   max_plan_steps=MAX_PLAN_STEPS, n_tests=len(ALL_TESTS))
 
     passed = failed = errored = 0

@@ -124,8 +124,8 @@ class Tracker:
             from mlflow import MlflowClient
             self._client = MlflowClient()
 
-    def start(self, model_key: str, resolved, mlflow_batch_name: str, repeat_idx: int,
-              max_plan_steps: int, n_tests: int) -> None:
+    def start(self, model_key: str, resolved, mlflow_batch_name: str, mlflow_batch_id: str,
+              repeat_idx: int, max_plan_steps: int, n_tests: int) -> None:
         if not self.enabled:
             return
         from mlflow.entities import Param
@@ -141,8 +141,9 @@ class Tracker:
             "reasoning_effort": resolved.reasoning_effort or "default",
         }
         tags = {
-            # Tag key stays "batch" so filters on runs logged before the rename keep working.
-            "batch": mlflow_batch_name,
+            # "batch" holds the unique per-launch id; older runs hold a plain name (e.g. v17).
+            "batch": mlflow_batch_id,
+            "batch_name": mlflow_batch_name,
             **config,  # also kept as tags so existing tag filters keep working
             "git_commit": _git("rev-parse", "--short", "HEAD"),
             "git_dirty": str(bool(_git("status", "--porcelain", "--untracked-files=no"))),

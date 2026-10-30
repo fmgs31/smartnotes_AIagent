@@ -1,12 +1,15 @@
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
-OUTPUT_LOG_FOLDER = 'v7'
 USE_MLFLOW = True  # needs MLFLOW_TRACKING_URI pointing at a running `mlflow server`
 USE_TRACE = True  # with USE_MLFLOW: one trace per test, shown in the run's evaluation panel
 MLFLOW_EXPERIMENT = 'planner-behavioural'
+MLFLOW_BATCH_NAME = 'v7'
+MLFLOW_BATCH_ID = f'{MLFLOW_BATCH_NAME}_{datetime.now():%Y%m%d_%H%M%S}'
+OUTPUT_LOG_FOLDER = f'{MLFLOW_EXPERIMENT}/{MLFLOW_BATCH_ID}'
 RUNS_PER_MODEL = {
     'gpt-5.4-nano_OR7':3,
     'gpt-5.4-nano_CB7':3,
@@ -24,7 +27,7 @@ def run_one(model: str, repeat_idx: int, total_runs: int, log_dir: Path, base_di
     cmd = [sys.executable, '-u', '-m', 'functional_tests.run', '--model', model]
     if USE_MLFLOW:
         cmd += ['--mlflow', '--mlflow-experiment', MLFLOW_EXPERIMENT,
-                '--mlflow-batch-name', OUTPUT_LOG_FOLDER, '--repeat-idx', str(repeat_idx)]
+                '--mlflow-batch-name', MLFLOW_BATCH_NAME, '--repeat-idx', str(repeat_idx)]
         if USE_TRACE:
             cmd.append('--trace')
 
@@ -33,6 +36,8 @@ def run_one(model: str, repeat_idx: int, total_runs: int, log_dir: Path, base_di
     env = os.environ.copy()
     env['PYTHONIOENCODING'] = 'utf-8'
     env['PYTHONUTF8'] = '1'
+    # Each child would otherwise derive its own timestamped batch id; share ours.
+    env['MLFLOW_BATCH_ID'] = MLFLOW_BATCH_ID
 
     with open(log_file, 'w', encoding='utf-8', errors='replace') as f:
         f.write(header + '\n')
