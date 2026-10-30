@@ -16,15 +16,15 @@ RUNS_PER_MODEL = {
 MODELS = list(RUNS_PER_MODEL.keys())
 
 
-def run_one(model: str, run_num: int, total_runs: int, log_dir: Path, base_dir: Path) -> int:
-    log_file = log_dir / f'{model}_run{run_num}.log'
-    header = f'=== {model} run {run_num}/{total_runs} | {log_file.relative_to(base_dir)} ==='
+def run_one(model: str, repeat_idx: int, total_runs: int, log_dir: Path, base_dir: Path) -> int:
+    log_file = log_dir / f'{model}_run{repeat_idx}.log'
+    header = f'=== {model} run {repeat_idx}/{total_runs} | {log_file.relative_to(base_dir)} ==='
     print(f'\n{header}', flush=True)
 
     cmd = [sys.executable, '-u', '-m', 'functional_tests.run', '--model', model]
     if USE_MLFLOW:
         cmd += ['--mlflow', '--mlflow-experiment', MLFLOW_EXPERIMENT,
-                '--mlflow-batch-name', OUTPUT_LOG_FOLDER, '--repeat-idx', str(run_num)]
+                '--mlflow-batch-name', OUTPUT_LOG_FOLDER, '--repeat-idx', str(repeat_idx)]
         if USE_TRACE:
             cmd.append('--trace')
 
@@ -77,14 +77,14 @@ def main() -> int:
     results: list[tuple[str, int, int]] = []
     for model in MODELS:
         n_runs = RUNS_PER_MODEL.get(model, 1)
-        for run_num in range(1, n_runs + 1):
-            rc = run_one(model, run_num, n_runs, log_dir, base_dir)
-            results.append((model, run_num, rc))
+        for repeat_idx in range(1, n_runs + 1):
+            rc = run_one(model, repeat_idx, n_runs, log_dir, base_dir)
+            results.append((model, repeat_idx, rc))
 
     print('\n=== summary ===', flush=True)
-    for model, run_num, rc in results:
+    for model, repeat_idx, rc in results:
         status = 'OK' if rc == 0 else f'FAIL({rc})'
-        print(f'  {model} run{run_num}: {status}', flush=True)
+        print(f'  {model} run{repeat_idx}: {status}', flush=True)
 
     return 0 if all(rc == 0 for _, _, rc in results) else 1
 

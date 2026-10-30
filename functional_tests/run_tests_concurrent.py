@@ -35,7 +35,7 @@ from functional_tests.functional_tests import ALL_TESTS, TestAgent, make_planner
 from functional_tests.tracking import Tracker  # noqa: E402
 
 # ── Configuration ────────────────────────────────────────────────────────────
-MLFLOW_EXPERIMENT = 'v16'
+MLFLOW_EXPERIMENT = 'v17'
 OUTPUT_LOG_FOLDER = MLFLOW_EXPERIMENT
 RUNS_PER_MODEL = {
     'gpt-5.4-nano': 2,
@@ -119,14 +119,14 @@ def _print_call_log(drive: FakeDrive) -> None:
         print(f"       [{c['step']}] {c['tool']}  {c['args']}")
 
 
-async def _execute_tests(model: str, tracker: Tracker, run_num: int) -> None:
+async def _execute_tests(model: str, tracker: Tracker, repeat_idx: int) -> None:
     """Runs all tests for one model. All print() goes to the current log file."""
     planner = make_planner()
     resolved = planner._model_registry.resolve(model)
     prompt_first_line = resolved.prompt.splitlines()[0]
     print(f"model: {model}  →  {resolved.full_name}")
     print(f"prompt: {prompt_first_line}")
-    tracker.start(model, resolved, OUTPUT_LOG_FOLDER, run_num,
+    tracker.start(model, resolved, OUTPUT_LOG_FOLDER, repeat_idx,
                   max_plan_steps=MAX_PLAN_STEPS, n_tests=len(ALL_TESTS))
 
     passed = failed = errored = 0
@@ -181,24 +181,24 @@ def _count_markers(log_path: Path) -> tuple[int, int, int, int]:
 
 async def _run_one(
     model: str,
-    run_num: int,
+    repeat_idx: int,
     total_runs: int,
     log_dir: Path,
     sem: asyncio.Semaphore,
 ) -> dict:
     async with sem:
-        log_file = log_dir / f'{model}_run{run_num}.log'
+        log_file = log_dir / f'{model}_run{repeat_idx}.log'
         rel = log_file.relative_to(ROOT)
-        _console(f'>>> START  {model} run {run_num}/{total_runs}  ->  {rel}')
+        _console(f'>>> START  {model} run {repeat_idx}/{total_runs}  ->  {rel}')
         t0 = time.perf_counter()
         crashed = False
         tracker = Tracker(USE_MLFLOW, MLFLOW_EXPERIMENT, trace=USE_TRACE)
         with open(log_file, 'w', encoding='utf-8', errors='replace') as f:
-            f.write(f'=== {model} run {run_num}/{total_runs} ===\n\n')
+            f.write(f'=== {model} run {repeat_idx}/{total_runs} ===\n\n')
             f.flush()
             token = _current_log.set(f)
             try:
-                await _execute_tests(model, tracker, run_num)
+                await _execute_tests(model, tracker, repeat_idx)
             except Exception:
                 traceback.print_exc()
                 crashed = True
@@ -209,15 +209,15 @@ async def _run_one(
         try:
             tracker.finish(passed, failed, errored, log_file=log_file, crashed=crashed, warnings=warnings)
         except Exception as exc:
-            _console(f'!!! MLflow logging failed for {model} run {run_num}: {type(exc).__name__}: {exc}')
+            _console(f'!!! MLflow logging failed for {model} run {repeat_idx}: {type(exc).__name__}: {exc}')
         status = 'CRASH' if crashed else ('OK' if (failed + errored) == 0 else 'FAIL')
         _console(
-            f'<<< DONE   {model} run {run_num}/{total_runs}  '
+            f'<<< DONE   {model} run {repeat_idx}/{total_runs}  '
             f'({elapsed:.1f}s)  {status}  '
             f'[p={passed} f={failed} e={errored} w={warnings}]'
         )
         return {
-            'model': model, 'run': run_num, 'status': status,
+            'model': model, 'repeat_idx': repeat_idx, 'status': status,
             'passed': passed, 'failed': failed, 'errored': errored,
             'warnings': warnings, 'elapsed': elapsed,
         }
@@ -235,8 +235,8 @@ async def main() -> int:
     tasks = []
     for model in MODELS:
         n_runs = RUNS_PER_MODEL.get(model, 1)
-        for run_num in range(1, n_runs + 1):
-            tasks.append(_run_one(model, run_num, n_runs, log_dir, sem))
+        for repeat_idx in range(1, n_runs + 1):
+            tasks.append(_run_one(model, repeat_idx, n_runs, log_dir, sem))
 
     _console(
         f'Scheduling {len(tasks)} run(s) across {len(MODELS)} model(s); '
@@ -258,7 +258,7 @@ async def main() -> int:
         total_failed += failures
         total_warned += tests_with_warn
         _console(
-            f"  {r['model']:30s} run{r['run']}  {r['status']:5s}  "
+            f"  {r['model']:30s} run{r['repeat_idx']}  {r['status']:5s}  "
             f"passed={r['passed']:2d}  failed={failures:2d}  warnings={tests_with_warn:2d}  "
             f"({r['elapsed']:.1f}s)"
         )

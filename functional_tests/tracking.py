@@ -124,7 +124,7 @@ class Tracker:
             from mlflow import MlflowClient
             self._client = MlflowClient()
 
-    def start(self, model_key: str, resolved, mlflow_batch_name: str, repeat: int,
+    def start(self, model_key: str, resolved, mlflow_batch_name: str, repeat_idx: int,
               max_plan_steps: int, n_tests: int) -> None:
         if not self.enabled:
             return
@@ -146,9 +146,10 @@ class Tracker:
             **config,  # also kept as tags so existing tag filters keep working
             "git_commit": _git("rev-parse", "--short", "HEAD"),
             "git_dirty": str(bool(_git("status", "--porcelain", "--untracked-files=no"))),
-            "repeat": str(repeat),
+            # Tag key stays "repeat" (value is repeat_idx) so filters on older runs keep working.
+            "repeat": str(repeat_idx),
         }
-        run = self._client.create_run(exp_id, run_name=f"{mlflow_batch_name}/{model_key}/r{repeat}", tags=tags)
+        run = self._client.create_run(exp_id, run_name=f"{mlflow_batch_name}/{model_key}/r{repeat_idx}", tags=tags)
         self.run_id = run.info.run_id
         params = {**config, "max_plan_steps": max_plan_steps, "n_tests": n_tests}
         self._client.log_batch(self.run_id, params=[Param(k, str(v)) for k, v in params.items()])
