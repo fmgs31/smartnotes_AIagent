@@ -195,6 +195,7 @@ repo root. Names are case-insensitive; the fields are defined in
 | `MCP_TIMEOUT_S` | no | `20.0` | Per-call MCP timeout |
 | `MCP_MAX_RETRIES` | no | `3` | Retries on MCP transport errors |
 | `MCP_RETRY_INITIAL_WAIT_S` / `MCP_RETRY_MAX_WAIT_S` | no | `1.5` / `10.0` | Backoff bounds for those retries |
+| `MCP_IAM_AUTH` | no | `false` | Send a Cloud Run IAM ID token (`X-Serverless-Authorization`) to the MCP server. Needs a service-account identity, so on in Cloud Run only |
 | `FIRESTORE_ENABLED` | no | `false` | Enables per-user Drive-item memory. Off ⇒ no persistence |
 | `FIRESTORE_PROJECT` | no | auto (ADC) | Override the Firestore project id |
 | `SERVERS_CONFIG_PATH` | no | `servers/servers.json` | MCP server registry location |
@@ -451,22 +452,32 @@ The script hard-requires `GCP_PROJECT_ID`, `GCP_REGION`,
 What it does:
 
 1. Enables the required GCP APIs and ensures the Artifact Registry repo exists.
-2. Builds and deploys `smartnotes-mcp` **in two phases** — the server needs
+2. Creates one runtime service account per service (`smartnotes-mcp@…`,
+   `smartnotes-gateway@…`) and grants the gateway `roles/datastore.user`.
+3. Syncs the three secrets (`GOOGLE_OAUTH_CLIENT_SECRET`, `OPENAI_API_KEY`,
+   `APP_API_KEY`) into Secret Manager, adding a version only when a value
+   changed, and grants each service access to its own secrets only.
+4. Builds and deploys `smartnotes-mcp` **in two phases** — the server needs
    `WORKSPACE_MCP_BASE_URI` set to its own Cloud Run URL for the OAuth 2.1
    handshake to work behind the HTTPS proxy, and that URL does not exist until
    after the first deploy.
-3. Builds and deploys `smartnotes-gateway`, pointing `GOOGLE_WORKSPACE_URL` at
+5. Builds and deploys `smartnotes-gateway`, pointing `GOOGLE_WORKSPACE_URL` at
    the MCP service and enabling Firestore.
+6. Destroys superseded secret versions.
 
-Both services are deployed `--allow-unauthenticated`: Cloud Run IAM auth would
-collide with the Google bearer token the gateway forwards, so the real auth
-layers are the MCP server's own OAuth 2.1 and the gateway's API key + email
+Secrets reach the containers as env vars via `--set-secrets`, so the app code
+reads them as before.
+
+**Auth layers.** The MCP server is private: only the gateway's service account
+holds `roles/run.invoker`. With `MCP_IAM_AUTH=true` the gateway sends its ID
+token in `X-Serverless-Authorization`, which Cloud Run checks, while
+`Authorization` still carries the user's Google token to the server's own
+OAuth 2.1 layer. The gateway stays `--allow-unauthenticated` because the mobile
+client can't mint Cloud Run ID tokens; its auth is the API key + email
 allowlist.
 
-**One-time IAM grant.** The gateway's service account needs Firestore access.
-The exact command is in a comment at the top of
-[deploy_all.sh](deploy_all.sh) — run it once per project
-(`roles/datastore.user` on the compute service account).
+A local gateway can no longer reach the Cloud Run MCP server; point
+`GOOGLE_WORKSPACE_URL` at a local MCP server instead.
 
 Adding or removing users needs no rebuild: update the `ALLOWED_EMAILS` env var
 on the gateway service.

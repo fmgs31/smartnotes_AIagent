@@ -41,6 +41,26 @@ class TestBuildTransport:
         MCPClient("http://test/mcp/")._build_transport(None)
         mock_transport.assert_called_once_with(url="http://test/mcp", headers=None)
 
+    @patch("app.mcp_client.StreamableHttpTransport")
+    def test_with_id_token_adds_serverless_header(self, mock_transport):
+        # Cloud Run IAM token goes in X-Serverless-Authorization, user token stays in Authorization.
+        MCPClient("http://test/mcp/")._build_transport("ya29.abc", "eyJ.id")
+        mock_transport.assert_called_once_with(
+            url="http://test/mcp",
+            headers={
+                "Authorization": "Bearer ya29.abc",
+                "X-Serverless-Authorization": "Bearer eyJ.id",
+            },
+        )
+
+    @patch("app.mcp_client.google_id_token.fetch_id_token", return_value="eyJ.id")
+    def test_id_token_audience_is_service_origin(self, mock_fetch):
+        # Cloud Run matches the audience against the service URL, without the /mcp path.
+        MCPClient("https://svc-123.a.run.app/mcp/")._fetch_id_token()
+        assert mock_fetch.call_args.args[1] == "https://svc-123.a.run.app", (
+            f"Expected origin-only audience, got {mock_fetch.call_args.args[1]!r}"
+        )
+
     def test_trailing_slash_stripped_from_url(self):
         # fastmcp 0.x chokes on trailing slashes — MCPClient normalises them away.
         url = MCPClient("http://test/mcp/").server_url
@@ -66,6 +86,32 @@ class TestOpenSession:
             f"Expected _session_token='tok', got {client._session_token!r}"
         )
         assert client._exit_stack is not None, "Expected _exit_stack to be set after successful open"
+
+    @patch("app.mcp_client.Client")
+    async def test_iam_auth_off_skips_id_token(self, mock_cls, monkeypatch):
+        # Default (local dev): no metadata-server call, no X-Serverless-Authorization.
+        monkeypatch.setattr("app.mcp_client.settings.mcp_iam_auth", False)
+        mock_cls.return_value = _mock_fastmcp_client()
+        client = MCPClient("http://test/mcp/")
+
+        with patch.object(client, "_fetch_id_token") as mock_fetch, \
+             patch.object(client, "_build_transport", wraps=client._build_transport) as mock_build:
+            await client._open_session("tok")
+
+        mock_fetch.assert_not_called()
+        mock_build.assert_called_once_with("tok", None)
+
+    @patch("app.mcp_client.Client")
+    async def test_iam_auth_on_passes_id_token(self, mock_cls, monkeypatch):
+        monkeypatch.setattr("app.mcp_client.settings.mcp_iam_auth", True)
+        mock_cls.return_value = _mock_fastmcp_client()
+        client = MCPClient("http://test/mcp/")
+
+        with patch.object(client, "_fetch_id_token", return_value="eyJ.id"), \
+             patch.object(client, "_build_transport", wraps=client._build_transport) as mock_build:
+            await client._open_session("tok")
+
+        mock_build.assert_called_once_with("tok", "eyJ.id")
 
     @patch("app.mcp_client.Client")
     async def test_same_token_is_idempotent(self, mock_cls):

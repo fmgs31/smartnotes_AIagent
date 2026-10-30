@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     mcp_retry_initial_wait_s: float = 1.5
     mcp_retry_max_wait_s: float = 10.0
 
+    # Cloud Run IAM auth to the MCP service. When true, every MCP session carries a
+    # Google ID token for the gateway's service account in X-Serverless-Authorization.
+    # Only works where ADC is a service account (Cloud Run), so leave it off locally.
+    mcp_iam_auth: bool = False
+
     # Orchestrator
     max_plan_steps: int = 5
 

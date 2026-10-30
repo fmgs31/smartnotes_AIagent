@@ -2,10 +2,13 @@ import asyncio
 import re
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import AsyncIterator
+from urllib.parse import urlsplit
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter
 
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2 import id_token as google_id_token
 
 from app.config import settings
 
@@ -59,9 +62,22 @@ class MCPClient:
             reraise=True,
         )
 
-    def _build_transport(self, token: str | None):
-        headers = {"Authorization": f"Bearer {token}"} if token else None
-        return StreamableHttpTransport(url=self.server_url, headers=headers)
+    def _fetch_id_token(self) -> str:
+        """ID token proving the gateway's service-account identity to Cloud Run IAM.
+        Audience is the service origin: Cloud Run matches it against the service URL."""
+        parts = urlsplit(self.server_url)
+        audience = f"{parts.scheme}://{parts.netloc}"
+        return google_id_token.fetch_id_token(GoogleAuthRequest(), audience)
+
+    def _build_transport(self, token: str | None, id_token: str | None = None):
+        # Cloud Run reads X-Serverless-Authorization for IAM and forwards Authorization
+        # untouched, so the user's Google token still reaches the MCP's OAuth 2.1 layer.
+        headers = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if id_token:
+            headers["X-Serverless-Authorization"] = f"Bearer {id_token}"
+        return StreamableHttpTransport(url=self.server_url, headers=headers or None)
 
     async def _open_session(self, token: str | None) -> None:
         if self._client is not None:
@@ -71,9 +87,13 @@ class MCPClient:
 
         @self._retry_decorator()
         async def _do_open():
+            # fetch_id_token is blocking (metadata-server HTTP call), hence the thread.
+            id_token = (
+                await asyncio.to_thread(self._fetch_id_token) if settings.mcp_iam_auth else None
+            )
             stack = AsyncExitStack()
             client = await stack.enter_async_context(
-                Client(transport=self._build_transport(token))
+                Client(transport=self._build_transport(token, id_token))
             )
             return stack, client
 
